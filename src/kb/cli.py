@@ -23,6 +23,7 @@ from .core import (
 from .graph import build_graph
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
+from .related import build_doc_edges, find_related
 from .sync import sync
 
 
@@ -238,6 +239,47 @@ def graph_cmd(subcommand: str):
     report = build_graph(root)
     click.echo(f"Processed {report['docs_processed']} document(s)")
     click.echo(f"Found {report['concepts_found']} unique concept(s)")
+
+    # Also build document-document edges
+    db = index_path(root)
+    conn = sqlite3.connect(db)
+    try:
+        edges = build_doc_edges(conn)
+    finally:
+        conn.close()
+    click.echo(f"Created {edges} document-document edge(s)")
+
+
+@main.command()
+@click.argument("doc_id")
+@click.option("--limit", "-n", default=10, help="Max results")
+def related(doc_id: str, limit: int):
+    """Find documents related to DOC_ID via shared concepts."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    db = index_path(root)
+    if not os.path.exists(db):
+        click.echo("No index found. Run 'kb graph build' first.", err=True)
+        raise SystemExit(1)
+
+    conn = sqlite3.connect(db)
+    try:
+        results = find_related(conn, doc_id, limit)
+    finally:
+        conn.close()
+
+    if not results:
+        click.echo(f"No related documents found for {doc_id}")
+        return
+
+    click.echo(f"Related to {doc_id}:")
+    for r in results:
+        click.echo(f"  [{r['doc_id']}] {r['title']} (weight: {r['weight']:.2f})")
+        if "source" in r:
+            click.echo(f"    source: {r['source']}")
 
 
 if __name__ == "__main__":
