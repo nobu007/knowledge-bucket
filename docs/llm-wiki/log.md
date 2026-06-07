@@ -64,3 +64,83 @@ Append durable decisions and completed goal progress here.
   - Docs without concepts get importance=0.0 (not scored)
   - `doc_stats` table separate from FTS `docs` virtual table (FTS columns are immutable)
 - **Phase 3 status**: importance estimation complete. Remaining: source-type prompts, Git repo/paper/PDF parsing, concept note auto-generation
+
+## 2026-06-07: Phase 3 — concept note auto-generation
+
+- **Commit**: `da65d56` feat(kb): add concept note suggestion and generation (Phase 3)
+- **What**: `src/kb/concepts.py` with `suggest_concept_notes()` (finds concepts with df >= min_df lacking a `.md` in `records/concept/`) and `generate_concept_note()` (creates stub note). CLI `kb concepts suggest [--min-df N] [--generate]`.
+- **Decisions**:
+  - Concept notes are stubs (label, df, representative doc titles) — human or AI fills in details later
+  - Suggestion threshold defaults to min_df=2 (same as active graph term threshold)
+- **Phase 3 status**: concept notes complete. Remaining: source-type prompts, Git repo/paper/PDF parsing
+
+## 2026-06-07: Phase 3 — analyzer prompt framework
+
+- **Commit**: `518364b` feat(kb): add analyzer prompt framework with source-type templates (Phase 3)
+- **What**:
+  - `prompts/` directory: base prompt (`analyzer_base.md`) + 5 source-type-specific templates (web, paper, repo, pdf, memo)
+  - `src/kb/analyzer.py`: prompt loading by source type (`load_prompt`), analysis request building (`build_analysis_prompt`), body formatting with metadata (`format_body_for_analysis`), response parsing (`parse_analysis_response` → `AnalysisResult` dataclass), front matter update builder (`build_front_matter_update`)
+  - CLI: `kb analyze DOC_ID [--raw-json]` — generates ready-to-send analysis prompt
+  - 25 new tests, 113 total pass, lint clean
+- **Decisions**:
+  - `git_repo` maps to same prompt as `repo`; `video` maps to `web` as fallback
+  - Prompt files are plain Markdown (no template engine needed) — simple and versionable
+  - AnalysisResult uses dataclasses for type-safe access; supports both dict and string concept formats in JSON
+  - Front matter update uses `concept:` prefix for concept IDs (matches GOAL.md schema)
+- **Phase 3 status**: source-type prompts complete. Remaining: Git repo/paper/PDF parsing
+
+## 2026-06-07: Phase 3 — Git repo parser
+
+- **Commit**: `6862f5b` feat(kb): add Git repo parser and kb add-repo command (Phase 3)
+- **What**:
+  - `src/kb/parsers/repo.py`: GitHub repo metadata extraction via `gh api` (description, language, stars, topics), README fetching via base64 decode, structured `parse_repo()` returning title/source/body/metadata dict
+  - `kb add-repo URL` CLI command: fetches repo, creates `git_repo` document with `repo_language`, `repo_stars`, `repo_topics` in front matter
+  - URL parser handles https, ssh, and `owner/repo` shorthand
+- **Decisions**:
+  - Uses `gh` CLI subprocess rather than Python HTTP library — no new dependencies, leverages existing auth
+  - `parsers/` package for extensibility (paper, PDF parsers will go here)
+  - Repo metadata stored in front matter for indexability; README goes in body
+- **Phase 3 status**: source-type prompts + Git repo parsing complete. Remaining: paper parsing, PDF parsing
+
+## 2026-06-07: Phase 3 — paper parser
+
+- **Commit**: `71045f6` feat(kb): add paper parser with arXiv and DOI support (Phase 3)
+- **What**: `src/kb/parsers/paper.py` with arXiv API and CrossRef DOI API support. Handles arXiv URLs/IDs (new and old style), DOI URLs/bare DOIs, and raw paper titles. CLI `kb add-paper REF`.
+- **Decisions**:
+  - Uses stdlib `urllib.request` and `xml.etree` — no new HTTP/XML dependencies
+  - `_classify_input()` tries arXiv first, then DOI, then raw fallback
+- **Phase 3 status**: paper parsing complete. Remaining: PDF parsing
+
+## 2026-06-07: Phase 3 — PDF parser (Phase 3 complete)
+
+- **Commit**: `abb5185` feat(kb): add PDF parser with text extraction and kb add-pdf command (Phase 3)
+- **What**:
+  - `src/kb/parsers/pdf.py`: text and metadata extraction from local PDF files via `pypdf`
+  - `kb add-pdf PATH [--source URL] [--content NOTES]` CLI command
+  - Extracts title, author, page count, producer from PDF metadata; falls back to filename
+  - Extracts text up to 5000 chars (per GOAL.md: no full text in Git)
+  - Creates `pdf` source_type documents with `pdf_pages`, `pdf_author` front matter fields
+  - 11 new tests, 169 total pass, lint clean
+- **Decisions**:
+  - Uses `pypdf` (pure Python, no binary deps) for PDF text extraction
+  - Text truncated at 5000 chars per GOAL.md policy (no full text stored in Git)
+  - Optional `--source` flag for external storage URL (S3/R2) where raw PDF is kept
+  - PDF metadata (title, author) extracted from embedded PDF info dict; filename used as fallback
+- **Phase 3 status**: ALL COMPLETE. Importance estimation, concept notes, source-type prompts, Git repo/paper/PDF parsing all done
+
+## 2026-06-07: Phase 4 — local web UI
+
+- **Commits**: `ca65747`, `772b315`, `76e45c1`
+- **What**:
+  - `src/kb/web.py`: Flask app with search page, document detail, related documents, categories, concept browser, interactive concept graph visualization
+  - `/api/search`, `/api/stats`, `/api/graph` JSON endpoints
+  - `/graph` page: D3.js force-directed graph (loaded from CDN) showing concept nodes (sized by df) and document nodes with draggable interaction, tooltips, and click-through to detail pages
+  - Navigation bar on all pages with links to Search, Categories, Concepts, Graph
+  - Concept tags on doc detail pages link to concept detail pages
+  - `kb serve` CLI command
+  - 191 total tests pass, lint clean
+- **Decisions**:
+  - D3.js loaded from CDN (no npm/JS build step)
+  - Graph limited to top 50 concepts by df and 100 connected docs for performance
+  - Node IDs prefixed with `c:` or `d:` to avoid collisions between concept and doc IDs
+- **Phase 4 status**: ALL COMPLETE. Search, document detail, related docs, category browse, concept browse, concept graph visualization all done
