@@ -5,6 +5,7 @@ import os
 import pytest
 
 from kb.core import DOC_DIR, RECORDS_DIR, ensure_dirs, generate_ulid, shard_path
+from kb.graph import init_graph_tables
 from kb.index import index_document, init_db
 from kb.web import create_app
 
@@ -62,6 +63,37 @@ def _index_doc(root, doc_id, title, source_type="web", source=None, content="Som
     index_document(
         conn, doc_id, title, source, source_type, rel, content,
     )
+    conn.close()
+
+
+def _setup_graph(root, doc_id, source_type="web", concepts=None):
+    from datetime import UTC, datetime
+
+    from kb.index import index_path
+
+    db = index_path(root)
+    conn = init_db(db)
+    init_graph_tables(conn)
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO doc_stats (doc_id, source_type, has_source, importance, updated_at) "
+        "VALUES (?, ?, 0, 0.5, ?)",
+        (doc_id, source_type, now),
+    )
+    if concepts:
+        for c in concepts:
+            conn.execute(
+                "INSERT OR IGNORE INTO concepts "
+                "(concept_id, label, kind, df, is_stop, created_at) "
+                "VALUES (?, ?, 'concept', 1, 0, ?)",
+                (c, c, now),
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES (?, ?, 'primary', 1.0)",
+                (doc_id, c),
+            )
+    conn.commit()
     conn.close()
 
 
@@ -157,7 +189,87 @@ class TestCreateApp:
         assert "/doc/<doc_id>" in rules
         assert "/api/search" in rules
         assert "/api/stats" in rules
+        assert "/categories" in rules
+        assert "/categories/<source_type>" in rules
+        assert "/concepts" in rules
+        assert "/concepts/<concept_id>" in rules
 
     def test_app_stores_kb_root(self, kb):
         app = create_app(kb)
         assert app.config["KB_ROOT"] == kb
+
+
+class TestCategoriesPage:
+    def test_empty_categories(self, client):
+        resp = client.get("/categories")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Categories" in html
+        assert "No categories yet" in html
+
+    def test_categories_with_data(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="A paper", source_type="paper")
+        _index_doc(kb, doc_id, "A paper", source_type="paper")
+        _setup_graph(kb, doc_id, source_type="paper")
+
+        resp = client.get("/categories")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "paper" in html
+
+
+class TestCategoryDetail:
+    def test_category_with_docs(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Test Web Page", source_type="web")
+        _index_doc(kb, doc_id, "Test Web Page", source_type="web")
+        _setup_graph(kb, doc_id, source_type="web")
+
+        resp = client.get("/categories/web")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Test Web Page" in html
+
+    def test_category_empty(self, client):
+        resp = client.get("/categories/memo")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No documents" in html
+
+
+class TestConceptsPage:
+    def test_empty_concepts(self, client):
+        resp = client.get("/concepts")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Concepts" in html
+        assert "No concepts yet" in html
+
+    def test_concepts_with_data(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="RAG doc", concepts=["rag", "llm"])
+        _index_doc(kb, doc_id, "RAG doc")
+        _setup_graph(kb, doc_id, concepts=["rag", "llm"])
+
+        resp = client.get("/concepts")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "rag" in html
+        assert "llm" in html
+
+
+class TestConceptDetail:
+    def test_concept_with_docs(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Graph RAG", concepts=["graph-rag"])
+        _index_doc(kb, doc_id, "Graph RAG")
+        _setup_graph(kb, doc_id, concepts=["graph-rag"])
+
+        resp = client.get("/concepts/graph-rag")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "graph-rag" in html
+        assert "Graph RAG" in html
+
+    def test_concept_no_docs(self, client):
+        resp = client.get("/concepts/nonexistent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No documents" in html
