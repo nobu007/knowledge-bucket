@@ -399,6 +399,68 @@ updated: {now}
     click.echo(f"  title: {paper_data['title']}")
 
 
+@main.command("add-pdf")
+@click.argument("pdf_path")
+@click.option("--source", "-s", default=None, help="URL where the raw PDF is stored externally")
+@click.option("--content", "-c", default=None, help="Notes or content text (or pipe via stdin)")
+def add_pdf(pdf_path: str, source: str | None, content: str | None):
+    """Add a PDF document by extracting text and metadata from a local file."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    from .parsers.pdf import parse_pdf
+
+    if content is None and not sys.stdin.isatty():
+        content = sys.stdin.read()
+
+    abs_pdf = os.path.abspath(pdf_path)
+    click.echo(f"Parsing {abs_pdf}...", err=True)
+    try:
+        pdf_data = parse_pdf(abs_pdf, source_url=source, content=content)
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+    ulid = generate_ulid()
+    rel_path = shard_path(ulid)
+    abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
+    os.makedirs(abs_dir, exist_ok=True)
+    abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
+
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+
+    front_matter = f"""\
+---
+id: {ulid}
+title: {pdf_data['title']}
+source_type: {pdf_data['source_type']}
+created: {now}
+updated: {now}
+"""
+    if pdf_data["source_url"]:
+        front_matter += f"source: {pdf_data['source_url']}\n"
+    meta = pdf_data.get("metadata", {})
+    if meta.get("page_count"):
+        front_matter += f"pdf_pages: {meta['page_count']}\n"
+    if meta.get("author"):
+        front_matter += f"pdf_author: {meta['author']}\n"
+    front_matter += "---\n\n"
+
+    body = pdf_data["body"]
+    with open(abs_path, "w") as f:
+        f.write(front_matter)
+        f.write(body)
+        if body and not body.endswith("\n"):
+            f.write("\n")
+
+    click.echo(f"Added: {ulid}")
+    click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+    click.echo(f"  title: {pdf_data['title']}")
+    click.echo(f"  pages: {meta.get('page_count', '?')}")
+
+
 @main.command("add-repo")
 @click.argument("url")
 def add_repo(url: str):

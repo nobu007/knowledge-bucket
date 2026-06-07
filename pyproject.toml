@@ -5,6 +5,7 @@ description = "Git-backed knowledge management with ULID IDs and hash-sharded pa
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
+    "pypdf>=4.0",
     "pyyaml>=6.0",
 ]
 
