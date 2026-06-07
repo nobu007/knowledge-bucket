@@ -1,12 +1,14 @@
-"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search, kb sync."""
+"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search, kb sync, kb analyze."""
 
 import datetime
+import json
 import os
 import sqlite3
 import sys
 
 import click
 
+from .analyzer import build_analysis_prompt
 from .concepts import generate_concept_note, suggest_concept_notes
 from .core import (
     CONFIG_DIR,
@@ -330,6 +332,53 @@ def related(doc_id: str, limit: int):
         click.echo(f"  [{r['doc_id']}] {r['title']} (weight: {r['weight']:.2f})")
         if "source" in r:
             click.echo(f"    source: {r['source']}")
+
+
+@main.command()
+@click.argument("doc_id")
+@click.option("--raw-json", is_flag=True, help="Output raw analysis prompt as JSON")
+def analyze(doc_id: str, raw_json: bool):
+    """Build an analysis prompt for DOC_ID. Output is a ready-to-send prompt."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    # Find the document by scanning records/doc/
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    found_path = None
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if fn == f"{doc_id}.md":
+                found_path = os.path.join(dirpath, fn)
+                break
+        if found_path:
+            break
+
+    if not found_path:
+        click.echo(f"Document not found: {doc_id}", err=True)
+        raise SystemExit(1)
+
+    from .graph import _parse_front_matter_yaml
+
+    with open(found_path) as f:
+        text = f.read()
+    meta, body = _parse_front_matter_yaml(text)
+
+    title = meta.get("title", doc_id)
+    source_type = meta.get("source_type", "web")
+    source_url = meta.get("source")
+
+    prompt = build_analysis_prompt(source_type, title, body.strip(), source_url)
+
+    if raw_json:
+        click.echo(json.dumps({
+            "doc_id": doc_id,
+            "source_type": source_type,
+            "prompt": prompt,
+        }, indent=2))
+    else:
+        click.echo(prompt)
 
 
 if __name__ == "__main__":
