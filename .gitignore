@@ -1,3 +1,6 @@
 # === goaldev runtime artifacts ===
 .goal_driven_parallel_dev/
 docs/MEMO.txt
+
+# === regeneratable index cache ===
+.kb/

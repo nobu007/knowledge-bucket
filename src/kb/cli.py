@@ -1,7 +1,8 @@
-"""CLI entry point: kb init, kb add, kb ingest, kb search, kb sync."""
+"""CLI entry point: kb init, kb add, kb index, kb search."""
 
 import datetime
 import os
+import sqlite3
 import sys
 
 import click
@@ -17,6 +18,7 @@ from .core import (
     kb_root,
     shard_path,
 )
+from .index import build_index, index_path, search_index
 
 
 @click.group()
@@ -98,6 +100,58 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+
+@main.command()
+@click.option("--rebuild", is_flag=True, help="Drop and rebuild index from scratch")
+def index(rebuild: bool):
+    """Build or rebuild the SQLite FTS search index."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    if rebuild:
+        db = index_path(root)
+        if os.path.exists(db):
+            os.remove(db)
+
+    count = build_index(root)
+    click.echo(f"Indexed {count} document(s)")
+
+
+@main.command()
+@click.argument("query")
+@click.option("--limit", "-n", default=20, help="Max results")
+def search(query: str, limit: int):
+    """Search documents using full-text search."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    db = index_path(root)
+    if not os.path.exists(db):
+        click.echo("No index found. Run 'kb index' first.", err=True)
+        raise SystemExit(1)
+
+    conn = sqlite3.connect(db)
+    try:
+        results = search_index(conn, query, limit)
+    finally:
+        conn.close()
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    for r in results:
+        click.echo(f"[{r['id']}] {r['title']}")
+        if r["source"]:
+            click.echo(f"  source: {r['source']}")
+        click.echo(f"  path: {r['rel_path']}")
+        click.echo(f"  {r['snippet']}")
+        click.echo()
 
 
 if __name__ == "__main__":
