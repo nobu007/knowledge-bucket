@@ -10,7 +10,9 @@ import click
 from .core import (
     CONFIG_DIR,
     CONFIG_FILENAME,
+    DEFAULT_ALIASES,
     DEFAULT_CONFIG,
+    DEFAULT_STOP_CONCEPTS,
     DOC_DIR,
     RECORDS_DIR,
     ensure_dirs,
@@ -18,6 +20,7 @@ from .core import (
     kb_root,
     shard_path,
 )
+from .graph import build_graph
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
 from .sync import sync
@@ -44,6 +47,16 @@ def init(path: str):
     with open(cfg_path, "w") as f:
         f.write(DEFAULT_CONFIG)
 
+    aliases_path = os.path.join(target, CONFIG_DIR, "aliases.yml")
+    if not os.path.exists(aliases_path):
+        with open(aliases_path, "w") as f:
+            f.write(DEFAULT_ALIASES)
+
+    stop_path = os.path.join(target, CONFIG_DIR, "stop_concepts.yml")
+    if not os.path.exists(stop_path):
+        with open(stop_path, "w") as f:
+            f.write(DEFAULT_STOP_CONCEPTS)
+
     # Ensure .gitkeep in inbox so git tracks the empty dir
     gitkeep = os.path.join(target, "inbox", ".gitkeep")
     if not os.path.exists(gitkeep):
@@ -58,7 +71,9 @@ def init(path: str):
 @click.option("--source", "-s", default=None, help="Source URL or reference")
 @click.option("--content", "-c", default=None, help="Content text (or pipe via stdin)")
 @click.option("--type", "doc_type", default="web", help="Source type: web|paper|repo|memo|pdf")
-def add(title: str, source: str | None, content: str | None, doc_type: str):
+@click.option("--concepts", default=None, help="Comma-separated concept slugs")
+def add(title: str, source: str | None, content: str | None, doc_type: str,
+        concepts: str | None):
     """Add a new document to the knowledge bucket."""
     root = kb_root()
     if root is None:
@@ -91,6 +106,13 @@ updated: {now}
 
     if source:
         front_matter += f"source: {source}\n"
+
+    if concepts:
+        front_matter += "concepts:\n"
+        for c in concepts.split(","):
+            c = c.strip()
+            if c:
+                front_matter += f"  - {c}\n"
 
     front_matter += "---\n\n"
 
@@ -198,6 +220,24 @@ def sync_cmd(message: str | None):
     else:
         click.echo("No changes to commit")
     click.echo(f"Pushed: {report['pushed']}")
+
+
+@main.command("graph")
+@click.argument("subcommand", default="build")
+def graph_cmd(subcommand: str):
+    """Build the concept graph from document metadata."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    if subcommand != "build":
+        click.echo(f"Unknown graph subcommand: {subcommand}. Use 'build'.", err=True)
+        raise SystemExit(1)
+
+    report = build_graph(root)
+    click.echo(f"Processed {report['docs_processed']} document(s)")
+    click.echo(f"Found {report['concepts_found']} unique concept(s)")
 
 
 if __name__ == "__main__":

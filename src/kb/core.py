@@ -22,6 +22,34 @@ inbox_dir: inbox
 shard_depth: 2  # hex chars per directory level
 """
 
+DEFAULT_ALIASES = """\
+# Concept aliases: normalize variant spellings to canonical form.
+aliases:
+  rag: retrieval-augmented-generation
+  retrieval augmented generation: retrieval-augmented-generation
+  retrieval-augmented-generation: retrieval-augmented-generation
+  graph rag: graph-rag
+  graphrag: graph-rag
+  llm: large-language-model
+  large language model: large-language-model
+"""
+
+DEFAULT_STOP_CONCEPTS = """\
+# Stop concepts: too generic for document-document linking.
+stop_concepts:
+  - ai
+  - artificial-intelligence
+  - programming
+  - software
+  - web
+  - article
+  - research
+  - paper
+  - github
+  - python
+  - javascript
+"""
+
 
 _last_ulid_ms: int = 0
 _last_ulid_rand: int = 0
