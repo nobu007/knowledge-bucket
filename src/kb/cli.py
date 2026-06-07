@@ -334,6 +334,71 @@ def related(doc_id: str, limit: int):
             click.echo(f"    source: {r['source']}")
 
 
+@main.command("add-paper")
+@click.argument("paper_ref")
+@click.option("--content", "-c", default=None, help="Notes or content text (or pipe via stdin)")
+def add_paper(paper_ref: str, content: str | None):
+    """Add a paper by arXiv URL/ID, DOI, or title."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    from .parsers.paper import parse_paper
+
+    if content is None and not sys.stdin.isatty():
+        content = sys.stdin.read()
+
+    click.echo(f"Fetching {paper_ref}...", err=True)
+    try:
+        paper_data = parse_paper(paper_ref, content=content)
+    except (ValueError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+    ulid = generate_ulid()
+    rel_path = shard_path(ulid)
+    abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
+    os.makedirs(abs_dir, exist_ok=True)
+    abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
+
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+
+    front_matter = f"""\
+---
+id: {ulid}
+title: {paper_data['title']}
+source_type: {paper_data['source_type']}
+created: {now}
+updated: {now}
+"""
+    if paper_data["source_url"]:
+        front_matter += f"source: {paper_data['source_url']}\n"
+    meta = paper_data.get("metadata", {})
+    if meta.get("authors"):
+        front_matter += "paper_authors:\n"
+        for a in meta["authors"]:
+            front_matter += f"  - {a}\n"
+    if meta.get("arxiv_id"):
+        front_matter += f"arxiv_id: {meta['arxiv_id']}\n"
+    if meta.get("doi"):
+        front_matter += f"doi: {meta['doi']}\n"
+    if meta.get("published"):
+        front_matter += f"paper_published: {meta['published']}\n"
+    front_matter += "---\n\n"
+
+    body = paper_data["body"]
+    with open(abs_path, "w") as f:
+        f.write(front_matter)
+        f.write(body)
+        if body and not body.endswith("\n"):
+            f.write("\n")
+
+    click.echo(f"Added: {ulid}")
+    click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+    click.echo(f"  title: {paper_data['title']}")
+
+
 @main.command("add-repo")
 @click.argument("url")
 def add_repo(url: str):
