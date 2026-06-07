@@ -144,3 +144,18 @@ Append durable decisions and completed goal progress here.
   - Graph limited to top 50 concepts by df and 100 connected docs for performance
   - Node IDs prefixed with `c:` or `d:` to avoid collisions between concept and doc IDs
 - **Phase 4 status**: ALL COMPLETE. Search, document detail, related docs, category browse, concept browse, concept graph visualization all done
+
+## 2026-06-07: Phase 5 — graph health dashboard
+
+- **What**:
+  - `src/kb/health.py`: `compute_health()` gathers overview stats (total docs/concepts/edges, orphan docs, isolated docs), source type breakdown, importance distribution (high/medium/low/unscored), top 20 concepts by df, concepts missing notes (df>=2), and metrics (avg concepts/doc, avg edges/doc, connectivity ratio)
+  - `kb health [--json]` CLI command: human-readable or JSON output
+  - Web UI: `/health` dashboard page with stat cards, source type bar chart, importance distribution, metrics grid, top concepts; `/api/health` JSON endpoint
+  - All navbar links updated to include Health
+  - 11 new tests, 202 total pass, lint clean
+- **Decisions**:
+  - Health module calls `init_graph_tables()` to ensure tables exist even on empty DBs
+  - Orphan docs = no concepts; isolated docs = no edges; both are quality indicators
+  - Concepts missing notes counted only for df>=2 (same threshold as active graph terms)
+  - Connectivity ratio = fraction of docs that have at least one edge
+- **Phase 5 status**: graph health dashboard complete. Remaining: vector index, Parquet export, S3/R2 raw storage, shard repo, batch reanalysis

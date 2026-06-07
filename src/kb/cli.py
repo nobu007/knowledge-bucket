@@ -24,6 +24,7 @@ from .core import (
     shard_path,
 )
 from .graph import build_graph
+from .health import compute_health
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
 from .related import build_doc_edges, find_related
@@ -564,6 +565,64 @@ def analyze(doc_id: str, raw_json: bool):
         }, indent=2))
     else:
         click.echo(prompt)
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def health(as_json: bool):
+    """Show graph health metrics and quality indicators."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    report = compute_health(root)
+    if "error" in report:
+        click.echo(report["error"], err=True)
+        raise SystemExit(1)
+
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+        return
+
+    ov = report["overview"]
+    click.echo("=== Knowledge Bucket Health ===")
+    click.echo()
+    click.echo(f"Documents:    {ov['total_documents']}")
+    click.echo(f"Concepts:     {ov['total_concepts']}")
+    click.echo(f"Edges:        {ov['total_edges']}")
+    click.echo(f"Orphan docs:  {ov['orphan_documents']} (no concepts)")
+    click.echo(f"Isolated docs:{ov['isolated_documents']} (no edges)")
+    click.echo()
+
+    m = report["metrics"]
+    click.echo("--- Metrics ---")
+    click.echo(f"Avg concepts/doc: {m['avg_concepts_per_doc']}")
+    click.echo(f"Avg edges/doc:    {m['avg_edges_per_doc']}")
+    click.echo(f"Connectivity:     {m['connectivity_ratio']:.1%}")
+    click.echo()
+
+    click.echo("--- Source Types ---")
+    for st, count in report["source_types"].items():
+        click.echo(f"  {st}: {count}")
+    click.echo()
+
+    click.echo("--- Importance Distribution ---")
+    dist = report["importance_distribution"]
+    click.echo(f"  High (>=0.7):    {dist['high']}")
+    click.echo(f"  Medium (0.4-0.7):{dist['medium']}")
+    click.echo(f"  Low (0.0-0.4):   {dist['low']}")
+    click.echo(f"  Unscored:        {dist['unscored']}")
+    click.echo()
+
+    if report["top_concepts"]:
+        click.echo("--- Top Concepts ---")
+        for c in report["top_concepts"][:10]:
+            click.echo(f"  {c['label']} (df={c['df']})")
+        click.echo()
+
+    if report["concepts_missing_notes"] > 0:
+        click.echo(f"Concepts missing notes (df>=2): {report['concepts_missing_notes']}")
 
 
 @main.command()

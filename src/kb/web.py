@@ -7,6 +7,7 @@ from flask import Flask, abort, render_template_string, request
 
 from .core import DOC_DIR, RECORDS_DIR
 from .graph import _parse_front_matter_yaml, init_graph_tables
+from .health import compute_health
 from .index import index_path, search_index
 from .related import find_related
 
@@ -156,6 +157,16 @@ def create_app(kb_root: str) -> Flask:
     def graph_page():
         return render_template_string(_GRAPH_HTML)
 
+    @app.route("/api/health")
+    def api_health():
+        report = compute_health(kb_root)
+        return report
+
+    @app.route("/health")
+    def health_page():
+        report = compute_health(kb_root)
+        return render_template_string(_HEALTH_HTML, report=report)
+
     @app.route("/categories")
     def categories_page():
         db = index_path(kb_root)
@@ -301,7 +312,8 @@ input[type=text] {
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 <form method="get">
   <input type="text" name="q" value="{{ query }}"
@@ -369,7 +381,8 @@ h2 {
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 <a class="back" href="/">&larr; Search</a>
 <h1>{{ meta.get('title', doc_id) }}</h1>
@@ -434,7 +447,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 {% if not categories %}
 <p class="empty">No categories yet. Run <code>kb graph build</code> first.</p>
@@ -478,7 +492,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 <a class="back" href="/categories">&larr; All categories</a>
 <h1>{{ source_type }}</h1>
@@ -532,7 +547,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 <div id="graph"></div>
 <div class="tooltip" id="tooltip"></div>
@@ -640,7 +656,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 {% if not concepts %}
 <p class="empty">No concepts yet. Run <code>kb graph build</code> first.</p>
@@ -684,7 +701,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
-  <a href="/graph">Graph</a>
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
 </nav>
 <a class="back" href="/concepts">&larr; All concepts</a>
 <h1>{{ concept_label }}</h1>
@@ -699,6 +717,161 @@ nav a { color: #2563eb; text-decoration: none; }
   </div>
 </div>
 {% endfor %}
+</body>
+</html>
+"""
+
+_HEALTH_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Health - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 800px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a;
+}
+h1 { margin-bottom: 1rem; font-size: 1.5rem; }
+nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
+nav a { color: #2563eb; text-decoration: none; }
+h2 {
+  font-size: 1.1rem; margin: 1.5rem 0 0.5rem;
+  border-bottom: 1px solid #eee; padding-bottom: 0.3rem;
+}
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem; margin: 1rem 0;
+}
+.stat-card {
+  background: #f8f9fa; border-radius: 6px; padding: 1rem; text-align: center;
+}
+.stat-card .value { font-size: 1.8rem; font-weight: 700; color: #1a1a1a; }
+.stat-card .label { font-size: 0.8rem; color: #666; margin-top: 0.25rem; }
+.stat-card.warn .value { color: #d97706; }
+.stat-card.good .value { color: #16a34a; }
+.bar-row { display: flex; align-items: center; margin: 0.3rem 0; }
+.bar-row .bar-label { width: 120px; font-size: 0.85rem; text-align: right; padding-right: 0.5rem; }
+.bar-row .bar { height: 20px; background: #2563eb; border-radius: 3px; min-width: 2px; }
+.bar-row .bar-count { font-size: 0.85rem; color: #666; margin-left: 0.5rem; }
+.concept-list { margin-top: 0.5rem; }
+.concept-item {
+  display: inline-block; background: #f0f0f0;
+  padding: 2px 8px; border-radius: 3px; margin: 2px;
+  font-size: 0.85rem;
+}
+.concept-item .df { color: #666; }
+.metrics-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem; margin: 0.5rem 0;
+}
+.metric-item { padding: 0.5rem; background: #f8f9fa; border-radius: 4px; }
+.metric-item .metric-value { font-weight: 600; font-size: 1.1rem; }
+.metric-item .metric-label { font-size: 0.8rem; color: #666; }
+.error { color: #dc2626; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Graph Health</h1>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
+</nav>
+{% if report.get('error') %}
+<p class="error">{{ report.error }}</p>
+{% else %}
+{% set ov = report.overview %}
+<div class="grid">
+  <div class="stat-card">
+    <div class="value">{{ ov.total_documents }}</div>
+    <div class="label">Documents</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ ov.total_concepts }}</div>
+    <div class="label">Concepts</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ ov.total_edges }}</div>
+    <div class="label">Edges</div>
+  </div>
+  <div class="stat-card {{ 'warn' if ov.orphan_documents > 0 else 'good' }}">
+    <div class="value">{{ ov.orphan_documents }}</div>
+    <div class="label">Orphan Docs</div>
+  </div>
+  <div class="stat-card {{ 'warn' if ov.isolated_documents > 0 else 'good' }}">
+    <div class="value">{{ ov.isolated_documents }}</div>
+    <div class="label">Isolated Docs</div>
+  </div>
+</div>
+
+<h2>Source Types</h2>
+{% for st, count in report.source_types.items() %}
+<div class="bar-row">
+  <span class="bar-label">{{ st }}</span>
+  <div class="bar" style="width: {{ count * 20 }}px"></div>
+  <span class="bar-count">{{ count }}</span>
+</div>
+{% endfor %}
+
+<h2>Importance Distribution</h2>
+{% set dist = report.importance_distribution %}
+<div class="grid">
+  <div class="stat-card good">
+    <div class="value">{{ dist.high }}</div><div class="label">High (&ge;0.7)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ dist.medium }}</div><div class="label">Medium (0.4-0.7)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ dist.low }}</div><div class="label">Low (&gt;0.0)</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="value">{{ dist.unscored }}</div><div class="label">Unscored</div>
+  </div>
+</div>
+
+<h2>Metrics</h2>
+<div class="metrics-grid">
+  <div class="metric-item">
+    <div class="metric-value">{{ report.metrics.avg_concepts_per_doc }}</div>
+    <div class="metric-label">Avg concepts/doc</div>
+  </div>
+  <div class="metric-item">
+    <div class="metric-value">{{ report.metrics.avg_edges_per_doc }}</div>
+    <div class="metric-label">Avg edges/doc</div>
+  </div>
+  <div class="metric-item">
+    <div class="metric-value">{{ "%.1f"|format(report.metrics.connectivity_ratio * 100) }}%</div>
+    <div class="metric-label">Connectivity</div>
+  </div>
+  {% if report.concepts_missing_notes > 0 %}
+  <div class="metric-item">
+    <div class="metric-value">{{ report.concepts_missing_notes }}</div>
+    <div class="metric-label">Concepts missing notes (df>=2)</div>
+  </div>
+  {% endif %}
+</div>
+
+<h2>Top Concepts</h2>
+{% if report.top_concepts %}
+<div class="concept-list">
+{% for c in report.top_concepts[:20] %}
+  <span class="concept-item">
+    <a href="/concepts/{{ c.id }}">{{ c.label }}</a>
+    <span class="df">(df={{ c.df }})</span>
+  </span>
+{% endfor %}
+</div>
+{% else %}
+<p style="color:#888;margin-top:0.5rem;">No concepts yet.</p>
+{% endif %}
+{% endif %}
 </body>
 </html>
 """
