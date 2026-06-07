@@ -566,5 +566,23 @@ def analyze(doc_id: str, raw_json: bool):
         click.echo(prompt)
 
 
+@main.command()
+@click.option("--host", default="127.0.0.1", help="Bind host")
+@click.option("--port", "-p", default=5000, type=int, help="Bind port")
+@click.option("--debug", is_flag=True, help="Enable Flask debug mode")
+def serve(host: str, port: int, debug: bool):
+    """Start local web UI for browsing the knowledge bucket."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    from .web import create_app
+
+    app = create_app(root)
+    click.echo(f"Starting Knowledge Bucket UI at http://{host}:{port}")
+    app.run(host=host, port=port, debug=debug)
+
+
 if __name__ == "__main__":
     main()
