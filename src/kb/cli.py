@@ -1,4 +1,4 @@
-"""CLI entry point: kb init, kb add, kb index, kb search."""
+"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search."""
 
 import datetime
 import os
@@ -19,6 +19,7 @@ from .core import (
     shard_path,
 )
 from .index import build_index, index_path, search_index
+from .ingest import ingest_inbox
 
 
 @click.group()
@@ -100,6 +101,24 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+
+@main.command()
+def ingest():
+    """Process inbox files into records and rebuild the search index."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    ingested = ingest_inbox(root)
+
+    if not ingested:
+        click.echo("No files to ingest.")
+        return
+
+    count = build_index(root)
+    click.echo(f"Ingested {len(ingested)} file(s), indexed {count} document(s) total")
 
 
 @main.command()
