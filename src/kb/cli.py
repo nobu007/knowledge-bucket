@@ -1,4 +1,4 @@
-"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search, kb sync, kb analyze."""
+"""CLI entry point for Knowledge Bucket commands."""
 
 import datetime
 import json
@@ -332,6 +332,64 @@ def related(doc_id: str, limit: int):
         click.echo(f"  [{r['doc_id']}] {r['title']} (weight: {r['weight']:.2f})")
         if "source" in r:
             click.echo(f"    source: {r['source']}")
+
+
+@main.command("add-repo")
+@click.argument("url")
+def add_repo(url: str):
+    """Fetch a GitHub repo by URL and add it as a git_repo document."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    from .parsers.repo import parse_repo
+
+    click.echo(f"Fetching {url}...", err=True)
+    try:
+        repo_data = parse_repo(url)
+    except (ValueError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+    ulid = generate_ulid()
+    rel_path = shard_path(ulid)
+    abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
+    os.makedirs(abs_dir, exist_ok=True)
+    abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
+
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+
+    front_matter = f"""\
+---
+id: {ulid}
+title: {repo_data['title']}
+source_type: {repo_data['source_type']}
+created: {now}
+updated: {now}
+source: {repo_data['source_url']}
+"""
+    meta = repo_data.get("metadata", {})
+    if meta.get("language"):
+        front_matter += f"repo_language: {meta['language']}\n"
+    if meta.get("stars"):
+        front_matter += f"repo_stars: {meta['stars']}\n"
+    if meta.get("topics"):
+        front_matter += "repo_topics:\n"
+        for t in meta["topics"]:
+            front_matter += f"  - {t}\n"
+    front_matter += "---\n\n"
+
+    body = repo_data["body"]
+    with open(abs_path, "w") as f:
+        f.write(front_matter)
+        f.write(body)
+        if body and not body.endswith("\n"):
+            f.write("\n")
+
+    click.echo(f"Added: {ulid}")
+    click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+    click.echo(f"  title: {repo_data['title']}")
 
 
 @main.command()
