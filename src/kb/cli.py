@@ -1,4 +1,4 @@
-"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search."""
+"""CLI entry point: kb init, kb add, kb ingest, kb index, kb search, kb sync."""
 
 import datetime
 import os
@@ -18,8 +18,9 @@ from .core import (
     kb_root,
     shard_path,
 )
-from .index import build_index, index_path, search_index
+from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
+from .sync import sync
 
 
 @click.group()
@@ -123,8 +124,9 @@ def ingest():
 
 @main.command()
 @click.option("--rebuild", is_flag=True, help="Drop and rebuild index from scratch")
-def index(rebuild: bool):
-    """Build or rebuild the SQLite FTS search index."""
+@click.option("--sync", "do_sync", is_flag=True, help="Incrementally add new documents only")
+def index(rebuild: bool, do_sync: bool):
+    """Build, rebuild, or incrementally sync the SQLite FTS search index."""
     root = kb_root()
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
@@ -135,8 +137,12 @@ def index(rebuild: bool):
         if os.path.exists(db):
             os.remove(db)
 
-    count = build_index(root)
-    click.echo(f"Indexed {count} document(s)")
+    if do_sync:
+        count = sync_index(root)
+        click.echo(f"Synced {count} new document(s) into index")
+    else:
+        count = build_index(root)
+        click.echo(f"Indexed {count} document(s)")
 
 
 @main.command()
@@ -171,6 +177,27 @@ def search(query: str, limit: int):
         click.echo(f"  path: {r['rel_path']}")
         click.echo(f"  {r['snippet']}")
         click.echo()
+
+
+@main.command("sync")
+@click.option("--message", "-m", default=None, help="Commit message (default: 'kb: sync')")
+def sync_cmd(message: str | None):
+    """Pull, ingest, index, stage, commit, and push."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    report = sync(root, message=message)
+
+    click.echo(f"Pulled: {report['pulled']}")
+    click.echo(f"Ingested: {report['ingested']} file(s)")
+    click.echo(f"Indexed: {report['indexed']} new document(s)")
+    if report["committed"]:
+        click.echo("Committed changes")
+    else:
+        click.echo("No changes to commit")
+    click.echo(f"Pushed: {report['pushed']}")
 
 
 if __name__ == "__main__":

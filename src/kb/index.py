@@ -98,6 +98,40 @@ def build_index(root: str) -> int:
     return count
 
 
+def sync_index(root: str) -> int:
+    """Incrementally index new documents (skip already-indexed IDs)."""
+    db_path = index_path(root)
+    conn = init_db(db_path)
+    existing = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    added = 0
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if not fn.endswith(".md"):
+                continue
+            abs_path = os.path.join(dirpath, fn)
+            result = _read_doc(abs_path)
+            if result is None:
+                continue
+            meta, body = result
+            if meta["id"] in existing:
+                continue
+            rel = os.path.relpath(abs_path, root)
+            index_document(
+                conn,
+                doc_id=meta["id"],
+                title=meta.get("title", ""),
+                source=meta.get("source"),
+                source_type=meta.get("source_type", "web"),
+                rel_path=rel,
+                content=body,
+            )
+            existing.add(meta["id"])
+            added += 1
+    conn.close()
+    return added
+
+
 def search_index(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "SELECT id, title, source, source_type, rel_path, "
