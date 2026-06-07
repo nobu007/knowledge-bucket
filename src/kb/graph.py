@@ -35,6 +35,13 @@ def init_graph_tables(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (src_id, dst_id, edge_type)
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS doc_stats (
+            doc_id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL DEFAULT 'web',
+            has_source INTEGER NOT NULL DEFAULT 0,
+            importance REAL NOT NULL DEFAULT 0.0,
+            updated_at TEXT NOT NULL
+        );
     """)
     conn.commit()
 
@@ -94,7 +101,7 @@ def _extract_concepts(meta: dict) -> list[str]:
     return []
 
 
-def _read_doc_concepts(filepath: str) -> tuple[str, list[str]] | None:
+def _read_doc_info(filepath: str) -> dict | None:
     try:
         with open(filepath) as f:
             text = f.read()
@@ -104,8 +111,12 @@ def _read_doc_concepts(filepath: str) -> tuple[str, list[str]] | None:
     doc_id = meta.get("id")
     if not doc_id:
         return None
-    concepts = _extract_concepts(meta)
-    return str(doc_id), concepts
+    return {
+        "doc_id": str(doc_id),
+        "concepts": _extract_concepts(meta),
+        "source_type": str(meta.get("source_type", "web")),
+        "has_source": bool(meta.get("source")),
+    }
 
 
 def build_graph(root: str) -> dict:
@@ -119,23 +130,31 @@ def build_graph(root: str) -> dict:
 
     conn.execute("DELETE FROM doc_concepts")
     conn.execute("DELETE FROM edges")
+    conn.execute("DELETE FROM doc_stats")
 
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     docs_processed = 0
     concepts_seen: dict[str, str] = {}
+    now = datetime.now(UTC).isoformat()
 
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
         for fn in filenames:
             if not fn.endswith(".md"):
                 continue
             abs_path = os.path.join(dirpath, fn)
-            result = _read_doc_concepts(abs_path)
-            if result is None:
+            info = _read_doc_info(abs_path)
+            if info is None:
                 continue
-            doc_id, raw_concepts = result
             docs_processed += 1
+            doc_id = info["doc_id"]
 
-            for raw_c in raw_concepts:
+            conn.execute(
+                "INSERT INTO doc_stats (doc_id, source_type, has_source, importance, updated_at) "
+                "VALUES (?, ?, ?, 0.0, ?)",
+                (doc_id, info["source_type"], int(info["has_source"]), now),
+            )
+
+            for raw_c in info["concepts"]:
                 concept_id = normalize_concept(raw_c, aliases)
                 if concept_id in stop:
                     continue
@@ -146,7 +165,6 @@ def build_graph(root: str) -> dict:
                     (doc_id, concept_id),
                 )
 
-    now = datetime.now(UTC).isoformat()
     for cid, label in concepts_seen.items():
         conn.execute(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
@@ -165,9 +183,14 @@ def build_graph(root: str) -> dict:
         )
 
     compute_df(conn)
+    scored = compute_importance(conn)
     conn.close()
 
-    return {"docs_processed": docs_processed, "concepts_found": len(concepts_seen)}
+    return {
+        "docs_processed": docs_processed,
+        "concepts_found": len(concepts_seen),
+        "importance_scored": scored,
+    }
 
 
 def compute_df(conn: sqlite3.Connection) -> None:
@@ -194,3 +217,73 @@ def get_active_graph_terms(conn: sqlite3.Connection, doc_id: str,
         {"concept_id": r[0], "label": r[1], "df": r[2], "weight": r[3]}
         for r in rows
     ]
+
+
+_SOURCE_TYPE_WEIGHTS: dict[str, float] = {
+    "paper": 1.0,
+    "pdf": 0.8,
+    "git_repo": 0.7,
+    "repo": 0.7,
+    "web": 0.4,
+    "video": 0.3,
+    "memo": 0.0,
+}
+
+
+def estimate_importance(
+    n_concepts: int,
+    avg_inv_df: float,
+    source_type: str = "web",
+    has_source: bool = False,
+) -> float:
+    """Heuristic importance score in [0.0, 1.0].
+
+    Based on concept count, concept rarity, source type weight,
+    and whether the document references an external source.
+    """
+    concept_score = min(1.0, n_concepts / 3.0)
+    rarity_score = min(1.0, avg_inv_df * 2.0)
+    type_score = _SOURCE_TYPE_WEIGHTS.get(source_type, 0.0)
+    source_score = 1.0 if has_source else 0.0
+    raw = (0.40 * concept_score + 0.30 * rarity_score
+           + 0.15 * type_score + 0.15 * source_score)
+    return round(min(1.0, max(0.0, raw)), 2)
+
+
+def compute_importance(conn: sqlite3.Connection) -> int:
+    """Compute importance for all documents in doc_stats that have concepts.
+
+    Returns the number of documents scored.
+    """
+    now = datetime.now(UTC).isoformat()
+    rows = conn.execute(
+        "SELECT dc.doc_id, "
+        "  COUNT(DISTINCT dc.concept_id) as n_concepts, "
+        "  AVG(CASE WHEN c.df > 0 THEN 1.0 / c.df ELSE 1.0 END) as avg_inv_df "
+        "FROM doc_concepts dc "
+        "JOIN concepts c ON c.concept_id = dc.concept_id "
+        "WHERE c.is_stop = 0 "
+        "GROUP BY dc.doc_id"
+    ).fetchall()
+
+    scored = 0
+    for doc_id, n_concepts, avg_inv_df in rows:
+        stat = conn.execute(
+            "SELECT source_type, has_source FROM doc_stats WHERE doc_id = ?",
+            (doc_id,),
+        ).fetchone()
+        source_type = stat[0] if stat else "web"
+        has_source = bool(stat[1]) if stat else False
+
+        imp = estimate_importance(
+            n_concepts, avg_inv_df or 0.0, source_type, has_source,
+        )
+        conn.execute(
+            "UPDATE doc_stats SET importance = ?, updated_at = ? "
+            "WHERE doc_id = ?",
+            (imp, now, doc_id),
+        )
+        scored += 1
+
+    conn.commit()
+    return scored

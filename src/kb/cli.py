@@ -239,6 +239,7 @@ def graph_cmd(subcommand: str):
     report = build_graph(root)
     click.echo(f"Processed {report['docs_processed']} document(s)")
     click.echo(f"Found {report['concepts_found']} unique concept(s)")
+    click.echo(f"Scored {report['importance_scored']} document(s) for importance")
 
     # Also build document-document edges
     db = index_path(root)

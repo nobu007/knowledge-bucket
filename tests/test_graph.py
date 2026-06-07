@@ -8,6 +8,7 @@ from kb.core import ensure_dirs
 from kb.graph import (
     build_graph,
     compute_df,
+    estimate_importance,
     get_active_graph_terms,
     init_graph_tables,
     load_aliases,
@@ -17,7 +18,8 @@ from kb.graph import (
 from kb.index import index_path, init_db
 
 
-def _make_doc(root, doc_id, title, concepts=None, source_type="web"):
+def _make_doc(root, doc_id, title, concepts=None, source_type="web",
+              source=None):
     """Helper: create a minimal document under root/records/doc/."""
     from kb.core import DOC_DIR, RECORDS_DIR
 
@@ -25,6 +27,8 @@ def _make_doc(root, doc_id, title, concepts=None, source_type="web"):
     os.makedirs(doc_dir, exist_ok=True)
     path = os.path.join(doc_dir, f"{doc_id}.md")
     fm = f"---\nid: {doc_id}\ntitle: {title}\nsource_type: {source_type}\n"
+    if source:
+        fm += f"source: {source}\n"
     if concepts:
         fm += "concepts:\n"
         for c in concepts:
@@ -223,4 +227,80 @@ class TestGetActiveGraphTerms:
             terms = get_active_graph_terms(conn, "d1")
             assert len(terms) == 1
             assert terms[0]["concept_id"] == "kg"
+            conn.close()
+
+
+class TestEstimateImportance:
+    def test_zero_concepts(self):
+        assert estimate_importance(0, 0.0, "memo", False) == 0.0
+
+    def test_max_concepts_web_no_source(self):
+        # 3 concepts, avg_inv_df=0.5, web, no source
+        imp = estimate_importance(3, 0.5, "web", False)
+        # concept_score=1.0, rarity=1.0, type=0.4, source=0.0
+        # = 0.40*1 + 0.30*1 + 0.15*0.4 + 0.15*0 = 0.76
+        assert imp == 0.76
+
+    def test_paper_with_source(self):
+        # 3 concepts, avg_inv_df=1.0, paper, has source
+        imp = estimate_importance(3, 1.0, "paper", True)
+        # concept=1.0, rarity=1.0, type=1.0, source=1.0
+        # = 0.40 + 0.30 + 0.15 + 0.15 = 1.0
+        assert imp == 1.0
+
+    def test_memo_low(self):
+        # 1 concept, avg_inv_df=0.1, memo, no source
+        imp = estimate_importance(1, 0.1, "memo", False)
+        # concept=1/3≈0.33, rarity=0.2, type=0.0, source=0.0
+        # = 0.40*0.33 + 0.30*0.2 = 0.133 + 0.06 = 0.19
+        assert imp == 0.19
+
+    def test_capped_at_one(self):
+        imp = estimate_importance(10, 2.0, "paper", True)
+        assert imp <= 1.0
+
+
+class TestComputeImportance:
+    def test_scores_docs_with_concepts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "Doc One", ["rag", "knowledge-graph"],
+                      source_type="paper", source="https://example.com")
+            _make_doc(tmp, "doc2", "Doc Two", ["graph-rag", "rag"])
+            _make_doc(tmp, "doc3", "No Concepts")
+
+            report = build_graph(tmp)
+            assert report["importance_scored"] == 2  # doc3 has no concepts
+
+            db = index_path(tmp)
+            conn = sqlite3.connect(db)
+            imp1 = conn.execute(
+                "SELECT importance FROM doc_stats WHERE doc_id='doc1'"
+            ).fetchone()
+            imp2 = conn.execute(
+                "SELECT importance FROM doc_stats WHERE doc_id='doc2'"
+            ).fetchone()
+            imp3 = conn.execute(
+                "SELECT importance FROM doc_stats WHERE doc_id='doc3'"
+            ).fetchone()
+            assert imp1[0] > imp2[0]  # paper+source > web+no-source
+            assert imp3[0] == 0.0  # no concepts
+            conn.close()
+
+    def test_doc_stats_populated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "Doc One", ["rag"],
+                      source_type="web", source="https://example.com")
+
+            build_graph(tmp)
+            db = index_path(tmp)
+            conn = sqlite3.connect(db)
+            row = conn.execute(
+                "SELECT source_type, has_source FROM doc_stats WHERE doc_id='doc1'"
+            ).fetchone()
+            assert row[0] == "web"
+            assert row[1] == 1
             conn.close()
