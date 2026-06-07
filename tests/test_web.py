@@ -193,6 +193,8 @@ class TestCreateApp:
         assert "/categories/<source_type>" in rules
         assert "/concepts" in rules
         assert "/concepts/<concept_id>" in rules
+        assert "/graph" in rules
+        assert "/api/graph" in rules
 
     def test_app_stores_kb_root(self, kb):
         app = create_app(kb)
@@ -273,3 +275,34 @@ class TestConceptDetail:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "No documents" in html
+
+
+class TestGraphPage:
+    def test_graph_page_renders(self, client):
+        resp = client.get("/graph")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Concept Graph" in html
+        assert "d3" in html
+
+    def test_graph_page_empty(self, client):
+        resp = client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["nodes"] == []
+        assert data["links"] == []
+
+    def test_graph_page_with_data(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="RAG Overview", concepts=["rag", "llm"])
+        _index_doc(kb, doc_id, "RAG Overview")
+        _setup_graph(kb, doc_id, concepts=["rag", "llm"])
+
+        resp = client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["nodes"]) >= 3  # 1 doc + 2 concepts
+        assert len(data["links"]) >= 2  # doc connected to both concepts
+        concept_nodes = [n for n in data["nodes"] if n["type"] == "concept"]
+        doc_nodes = [n for n in data["nodes"] if n["type"] == "doc"]
+        assert any(n["label"] == "rag" for n in concept_nodes)
+        assert any(n["label"] == "RAG Overview" for n in doc_nodes)

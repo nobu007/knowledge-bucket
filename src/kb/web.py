@@ -103,6 +103,59 @@ def create_app(kb_root: str) -> Flask:
             conn.close()
         return {"docs": doc_count, "concepts": concept_count}
 
+    @app.route("/api/graph")
+    def api_graph():
+        db = index_path(kb_root)
+        if not os.path.exists(db):
+            return {"nodes": [], "links": []}
+        conn = sqlite3.connect(db)
+        try:
+            init_graph_tables(conn)
+            # Top concepts by document frequency
+            concept_rows = conn.execute(
+                "SELECT concept_id, label, df FROM concepts "
+                "WHERE is_stop=0 AND df >= 1 ORDER BY df DESC LIMIT 50"
+            ).fetchall()
+            concept_ids = [r[0] for r in concept_rows]
+            if not concept_ids:
+                return {"nodes": [], "links": []}
+            placeholders = ",".join("?" * len(concept_ids))
+            # Documents connected to these concepts
+            doc_rows = conn.execute(
+                f"SELECT DISTINCT d.id, d.title, d.source "
+                f"FROM docs d "
+                f"JOIN doc_concepts dc ON dc.doc_id = d.id "
+                f"WHERE dc.concept_id IN ({placeholders}) "
+                f"ORDER BY d.title ASC LIMIT 100",
+                concept_ids,
+            ).fetchall()
+            doc_ids = [r[0] for r in doc_rows]
+            # Edges between docs and concepts
+            edge_rows = conn.execute(
+                f"SELECT dc.doc_id, dc.concept_id, dc.weight "
+                f"FROM doc_concepts dc "
+                f"WHERE dc.doc_id IN ({','.join('?' * len(doc_ids))}) "
+                f"AND dc.concept_id IN ({placeholders})",
+                doc_ids + concept_ids,
+            ).fetchall()
+        finally:
+            conn.close()
+
+        nodes = []
+        for cid, label, df in concept_rows:
+            nodes.append({"id": f"c:{cid}", "label": label, "type": "concept", "df": df})
+        for did, title, source in doc_rows:
+            nodes.append({
+                "id": f"d:{did}", "label": title or did,
+                "type": "doc", "source": source,
+            })
+        links = [{"source": f"d:{e[0]}", "target": f"c:{e[1]}", "weight": e[2]} for e in edge_rows]
+        return {"nodes": nodes, "links": links}
+
+    @app.route("/graph")
+    def graph_page():
+        return render_template_string(_GRAPH_HTML)
+
     @app.route("/categories")
     def categories_page():
         db = index_path(kb_root)
@@ -247,7 +300,8 @@ input[type=text] {
 <nav style="margin-bottom:1.5rem;font-size:0.9rem;">
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 <form method="get">
   <input type="text" name="q" value="{{ query }}"
@@ -314,7 +368,8 @@ h2 {
 <nav style="margin-bottom:1rem;font-size:0.9rem;">
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 <a class="back" href="/">&larr; Search</a>
 <h1>{{ meta.get('title', doc_id) }}</h1>
@@ -378,7 +433,8 @@ nav a { color: #2563eb; text-decoration: none; }
 <nav>
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 {% if not categories %}
 <p class="empty">No categories yet. Run <code>kb graph build</code> first.</p>
@@ -421,7 +477,8 @@ nav a { color: #2563eb; text-decoration: none; }
 <nav>
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 <a class="back" href="/categories">&larr; All categories</a>
 <h1>{{ source_type }}</h1>
@@ -437,6 +494,116 @@ nav a { color: #2563eb; text-decoration: none; }
   </div>
 </div>
 {% endfor %}
+</body>
+</html>
+"""
+
+_GRAPH_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concept Graph - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  color: #1a1a1a; background: #fafafa;
+}
+nav { padding: 1rem; font-size: 0.9rem; background: #fff; border-bottom: 1px solid #eee; }
+nav a { color: #2563eb; text-decoration: none; }
+#graph { width: 100vw; height: calc(100vh - 50px); }
+.node { cursor: pointer; }
+.node circle { stroke-width: 1.5px; }
+.node.concept circle { fill: #2563eb; stroke: #1d4ed8; }
+.node.doc circle { fill: #f59e0b; stroke: #d97706; }
+.node text { font-size: 11px; pointer-events: none; }
+.link { stroke: #999; stroke-opacity: 0.4; }
+.tooltip {
+  position: absolute; padding: 6px 10px; background: #1a1a1a; color: #fff;
+  border-radius: 4px; font-size: 12px; pointer-events: none; display: none;
+}
+.empty { text-align: center; padding: 4rem 1rem; color: #888; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
+</nav>
+<div id="graph"></div>
+<div class="tooltip" id="tooltip"></div>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+(async function() {
+  const resp = await fetch('/api/graph');
+  const data = await resp.json();
+  if (!data.nodes.length) {
+    document.getElementById('graph').innerHTML =
+      '<div class="empty">No graph data yet. ' +
+      'Add documents and run <code>kb graph build</code>.</div>';
+    return;
+  }
+  const width = document.getElementById('graph').clientWidth;
+  const height = document.getElementById('graph').clientHeight;
+  const svg = d3.select('#graph').append('svg').attr('width', width).attr('height', height);
+  const tooltip = document.getElementById('tooltip');
+
+  const maxDf = d3.max(data.nodes.filter(n => n.type === 'concept'), n => n.df) || 1;
+  const nodeSize = n => n.type === 'concept'
+    ? 8 + (n.df / maxDf) * 16
+    : 7;
+
+  const sim = d3.forceSimulation(data.nodes)
+    .force('link', d3.forceLink(data.links).id(d => d.id).distance(60))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => nodeSize(d) + 4));
+
+  const link = svg.append('g').selectAll('line').data(data.links).join('line')
+    .attr('class', 'link')
+    .attr('stroke-width', d => Math.max(1, d.weight));
+
+  const node = svg.append('g').selectAll('g').data(data.nodes).join('g')
+    .attr('class', d => 'node ' + d.type)
+    .call(d3.drag()
+      .on('start', (e, d) => {
+          if (!e.active) sim.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
+        })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  node.append('circle').attr('r', d => nodeSize(d));
+  node.append('text').attr('dx', d => nodeSize(d) + 4).attr('dy', 4).text(d => d.label);
+
+  node.on('mouseover', (e, d) => {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.pageX + 10) + 'px';
+    tooltip.style.top = (e.pageY - 10) + 'px';
+    if (d.type === 'concept') {
+      tooltip.textContent = d.label + ' (' + d.df + ' docs)';
+    } else {
+      tooltip.innerHTML = '<b>' + d.label + '</b>' + (d.source ? '<br>' + d.source : '');
+    }
+  }).on('mouseout', () => { tooltip.style.display = 'none'; });
+
+  node.on('click', (e, d) => {
+    if (d.type === 'doc') window.location.href = '/doc/' + d.id.substring(2);
+    else window.location.href = '/concepts/' + d.id.substring(2);
+  });
+
+  sim.on('tick', () => {
+    link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+  });
+})();
+</script>
 </body>
 </html>
 """
@@ -472,7 +639,8 @@ nav a { color: #2563eb; text-decoration: none; }
 <nav>
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 {% if not concepts %}
 <p class="empty">No concepts yet. Run <code>kb graph build</code> first.</p>
@@ -515,7 +683,8 @@ nav a { color: #2563eb; text-decoration: none; }
 <nav>
   <a href="/">Search</a> &middot;
   <a href="/categories">Categories</a> &middot;
-  <a href="/concepts">Concepts</a>
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a>
 </nav>
 <a class="back" href="/concepts">&larr; All concepts</a>
 <h1>{{ concept_label }}</h1>
