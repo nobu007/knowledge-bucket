@@ -7,6 +7,7 @@ import sys
 
 import click
 
+from .concepts import generate_concept_note, suggest_concept_notes
 from .core import (
     CONFIG_DIR,
     CONFIG_FILENAME,
@@ -249,6 +250,54 @@ def graph_cmd(subcommand: str):
     finally:
         conn.close()
     click.echo(f"Created {edges} document-document edge(s)")
+
+
+@main.command("concepts")
+@click.argument("subcommand", default="suggest")
+@click.option("--min-df", default=2, type=int, help="Minimum document frequency")
+@click.option("--generate", is_flag=True, help="Generate note files for candidates")
+def concepts_cmd(subcommand: str, min_df: int, generate: bool):
+    """Manage concept notes. Subcommands: suggest."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    if subcommand != "suggest":
+        click.echo(f"Unknown concepts subcommand: {subcommand}. Use 'suggest'.", err=True)
+        raise SystemExit(1)
+
+    db = index_path(root)
+    if not os.path.exists(db):
+        click.echo("No index found. Run 'kb graph build' first.", err=True)
+        raise SystemExit(1)
+
+    conn = sqlite3.connect(db)
+    try:
+        candidates = suggest_concept_notes(conn, root, min_df=min_df)
+    finally:
+        conn.close()
+
+    if not candidates:
+        click.echo("No concept note candidates found.")
+        return
+
+    click.echo(f"Found {len(candidates)} concept note candidate(s):")
+    generated = 0
+    for c in candidates:
+        click.echo(f"  {c['label']} (df={c['df']})")
+        if c["doc_titles"]:
+            for t in c["doc_titles"][:3]:
+                click.echo(f"    - {t}")
+        if generate:
+            rel = generate_concept_note(
+                root, c["concept_id"], c["label"], c["df"], c["doc_titles"],
+            )
+            generated += 1
+            click.echo(f"    -> generated: {rel}")
+
+    if generate and generated:
+        click.echo(f"Generated {generated} concept note(s)")
 
 
 @main.command()
