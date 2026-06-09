@@ -215,3 +215,18 @@ Append durable decisions and completed goal progress here.
   - Reuses existing SQLite schema (concepts, doc_concepts, docs tables)
   - Documents limited to 20 results; concept note displayed inline below separator
 - **GOAL.md section 15 CLI spec status**: all commands now implemented (init, add, ingest, index, search, show, related, concept, export, sync)
+
+## 2026-06-09: Dynamic hub detection — GOAL.md section 10
+
+- **Commit**: `5633f19` feat(kb): add dynamic hub detection per GOAL.md section 10
+- **What**:
+  - `compute_hub_threshold(conn)` in `graph.py`: `min(5000, max(50, floor(0.002 * N)))` from total doc count
+  - `get_active_graph_terms()` now excludes concepts with df above hub_threshold (in addition to stop concepts and df<2)
+  - Health dashboard reports `hub_threshold` in overview and lists `hub_concepts` that exceed it
+  - CLI `kb health` shows hub threshold and hub concept list
+  - 7 new tests (4 for hub threshold computation, 2 for hub exclusion in graph terms, 1 for health hub detection), 238 total pass, lint clean
+- **Decisions**:
+  - Hub threshold computed dynamically from N at query time (not stored) — always reflects current corpus size
+  - Hub exclusion applied only to active graph terms and edge building, not to concept display or FTS search
+  - Concepts that are both in stop_concepts.yml AND exceed hub threshold are still filtered by is_stop=0 first
+- **GOAL.md section 10 status**: hub detection complete
