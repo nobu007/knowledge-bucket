@@ -245,3 +245,16 @@ Append durable decisions and completed goal progress here.
   - Sources table updated with new content_hash and timestamp via `register_source()`
   - If existing file is missing from disk (manually deleted but source entry remains), falls through to create new document
 - **GOAL.md section 18 status**: update logic complete
+
+## 2026-06-10: content_hash persisted to document front matter — GOAL.md section 6
+
+- **Commit**: `0397e3c` feat(kb): persist content_hash to document front matter per GOAL.md section 6
+- **What**:
+  - `ingest_file()` writes `content_hash: sha256:<hex>` to front matter on new document creation
+  - In-place update path (section 18) also updates `content_hash` line via regex when body changes
+  - 2 new tests: `test_content_hash_in_front_matter` (present on creation), `test_content_hash_updated_on_change` (updates when content differs)
+  - 316 total tests pass, lint clean
+- **Decisions**:
+  - Format: `sha256:<hex>` prefix to match GOAL.md section 6 schema example
+  - Flat front matter field (not nested under `source:`) — consistent with existing `source_key` pattern
+- **GOAL.md section 6 status**: content_hash schema field now persisted to Markdown
