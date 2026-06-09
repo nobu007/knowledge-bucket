@@ -552,6 +552,66 @@ source: {repo_data['source_url']}
 
 @main.command()
 @click.argument("doc_id")
+@click.option("--full", is_flag=True, help="Show full body without truncation")
+def show(doc_id: str, full: bool):
+    """Display metadata and body of document DOC_ID."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    found_path = None
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if fn == f"{doc_id}.md":
+                found_path = os.path.join(dirpath, fn)
+                break
+        if found_path:
+            break
+
+    if not found_path:
+        click.echo(f"Document not found: {doc_id}", err=True)
+        raise SystemExit(1)
+
+    from .graph import _parse_front_matter_yaml
+
+    with open(found_path) as f:
+        text = f.read()
+    meta, body = _parse_front_matter_yaml(text)
+
+    click.echo(f"ID:          {meta.get('id', doc_id)}")
+    click.echo(f"Title:       {meta.get('title', '(untitled)')}")
+    click.echo(f"Source type: {meta.get('source_type', 'unknown')}")
+    if meta.get("source"):
+        click.echo(f"Source:      {meta['source']}")
+    click.echo(f"Created:     {meta.get('created', 'unknown')}")
+    click.echo(f"Updated:     {meta.get('updated', 'unknown')}")
+
+    concepts = meta.get("concepts", [])
+    if isinstance(concepts, str):
+        concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+    if concepts:
+        click.echo(f"Concepts:    {', '.join(concepts)}")
+
+    importance = meta.get("importance")
+    if importance is not None:
+        click.echo(f"Importance:  {importance}")
+
+    click.echo()
+    if full:
+        click.echo(body.rstrip())
+    else:
+        lines = body.strip().split("\n")
+        if len(lines) > 20:
+            click.echo("\n".join(lines[:20]))
+            click.echo(f"... ({len(lines) - 20} more lines, use --full to show)")
+        else:
+            click.echo(body.rstrip())
+
+
+@main.command()
+@click.argument("doc_id")
 @click.option("--raw-json", is_flag=True, help="Output raw analysis prompt as JSON")
 def analyze(doc_id: str, raw_json: bool):
     """Build an analysis prompt for DOC_ID. Output is a ready-to-send prompt."""
