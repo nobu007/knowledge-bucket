@@ -8,6 +8,7 @@ from kb.core import ensure_dirs
 from kb.graph import (
     build_graph,
     compute_df,
+    compute_hub_threshold,
     estimate_importance,
     get_active_graph_terms,
     init_graph_tables,
@@ -303,4 +304,122 @@ class TestComputeImportance:
             ).fetchone()
             assert row[0] == "web"
             assert row[1] == 1
+            conn.close()
+
+
+class TestComputeHubThreshold:
+    def test_small_corpus_returns_min_50(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            # 0 docs -> 0.002 * 0 = 0 -> max(50, 0) = 50
+            assert compute_hub_threshold(conn) == 50
+            conn.close()
+
+    def test_medium_corpus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            for i in range(100):
+                conn.execute(
+                    "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                    "VALUES (?, ?, '', 'web', '', '')",
+                    (f"doc{i:04d}", f"Doc {i}"),
+                )
+            conn.commit()
+            # 0.002 * 100 = 0.2 -> floor=0 -> max(50, 0) = 50
+            assert compute_hub_threshold(conn) == 50
+            conn.close()
+
+    def test_large_corpus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            for i in range(50000):
+                conn.execute(
+                    "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                    "VALUES (?, ?, '', 'web', '', '')",
+                    (f"doc{i:05d}", f"Doc {i}"),
+                )
+            conn.commit()
+            # 0.002 * 50000 = 100 -> max(50, 100) = 100
+            assert compute_hub_threshold(conn) == 100
+            conn.close()
+
+    def test_very_large_corpus_capped_at_5000(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            for i in range(100000):
+                conn.execute(
+                    "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                    "VALUES (?, ?, '', 'web', '', '')",
+                    (f"doc{i:06d}", f"Doc {i}"),
+                )
+            conn.commit()
+            # 0.002 * 100000 = 200 -> min(5000, 200) = 200
+            assert compute_hub_threshold(conn) == 200
+            conn.close()
+
+
+class TestGetActiveGraphTermsHubExclusion:
+    def test_excludes_hub_concepts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            init_graph_tables(conn)
+            # Add one doc to FTS so N=1, threshold=50
+            conn.execute(
+                "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                "VALUES ('d0', 'Placeholder', '', 'web', '', '')"
+            )
+            conn.commit()
+            # rag: df=2, below threshold 50 -> should appear
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('rag', 'RAG', 2, 0, '2026-01-01')"
+            )
+            # common-term: df=100, above threshold 50 -> should NOT appear
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('common-term', 'Common', 100, 0, '2026-01-01')"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d1', 'rag', 'primary', 1.0)"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d1', 'common-term', 'primary', 1.0)"
+            )
+            conn.commit()
+
+            terms = get_active_graph_terms(conn, "d1")
+            concept_ids = [t["concept_id"] for t in terms]
+            assert "rag" in concept_ids
+            assert "common-term" not in concept_ids
+            conn.close()
+
+    def test_custom_hub_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            init_graph_tables(conn)
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('rag', 'RAG', 5, 0, '2026-01-01')"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d1', 'rag', 'primary', 1.0)"
+            )
+            conn.commit()
+
+            # With default threshold (N=0 -> 50), df=5 is fine
+            terms = get_active_graph_terms(conn, "d1")
+            assert len(terms) == 1
+
+            # With explicit threshold=3, df=5 should be excluded
+            terms = get_active_graph_terms(conn, "d1", hub_threshold=3)
+            assert len(terms) == 0
             conn.close()

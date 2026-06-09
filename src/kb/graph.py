@@ -193,6 +193,16 @@ def build_graph(root: str) -> dict:
     }
 
 
+def compute_hub_threshold(conn: sqlite3.Connection) -> int:
+    """Compute dynamic hub threshold per GOAL.md section 10.
+
+    hub_threshold = min(5000, max(50, floor(0.002 * N)))
+    Concepts with df > threshold are too common for doc-doc edges.
+    """
+    n = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+    return min(5000, max(50, int(0.002 * n)))
+
+
 def compute_df(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE concepts SET df = COALESCE("
@@ -203,15 +213,19 @@ def compute_df(conn: sqlite3.Connection) -> None:
 
 
 def get_active_graph_terms(conn: sqlite3.Connection, doc_id: str,
-                           max_terms: int = 5) -> list[dict]:
+                           max_terms: int = 5,
+                           hub_threshold: int | None = None) -> list[dict]:
+    if hub_threshold is None:
+        hub_threshold = compute_hub_threshold(conn)
     rows = conn.execute(
         "SELECT c.concept_id, c.label, c.df, dc.weight "
         "FROM doc_concepts dc "
         "JOIN concepts c ON c.concept_id = dc.concept_id "
         "WHERE dc.doc_id = ? AND c.df >= 2 AND c.is_stop = 0 "
+        "  AND c.df <= ? "
         "ORDER BY dc.weight DESC, c.df ASC "
         "LIMIT ?",
-        (doc_id, max_terms),
+        (doc_id, hub_threshold, max_terms),
     ).fetchall()
     return [
         {"concept_id": r[0], "label": r[1], "df": r[2], "weight": r[3]}

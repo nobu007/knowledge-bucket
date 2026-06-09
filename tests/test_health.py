@@ -96,6 +96,7 @@ class TestComputeHealth:
         assert report["overview"]["total_edges"] == 0
         assert report["overview"]["orphan_documents"] == 1
         assert report["overview"]["isolated_documents"] == 1
+        assert report["overview"]["hub_threshold"] == 50
 
     def test_with_graph_data(self, kb):
         doc_id = _add_doc(kb, title="RAG Paper", source_type="paper",
@@ -154,6 +155,26 @@ class TestComputeHealth:
         report = compute_health(kb)
         # rag has df=2 and no note file
         assert report["concepts_missing_notes"] >= 1
+
+    def test_hub_concepts_detected(self, kb):
+        doc1 = _add_doc(kb, title="Doc", concepts=["rag", "common-term"])
+        _index_doc(kb, doc1, "Doc")
+        _setup_graph(kb, doc1, concepts=["rag", "common-term"])
+
+        # Set common-term df above threshold (50 for N=1)
+        from kb.index import index_path
+        db = index_path(kb)
+        conn = init_db(db)
+        init_graph_tables(conn)
+        conn.execute("UPDATE concepts SET df = 100 WHERE concept_id = 'common-term'")
+        conn.execute("UPDATE concepts SET df = 2 WHERE concept_id = 'rag'")
+        conn.commit()
+        conn.close()
+
+        report = compute_health(kb)
+        hub_ids = [c["id"] for c in report["hub_concepts"]]
+        assert "common-term" in hub_ids
+        assert "rag" not in hub_ids
 
 
 class TestHealthWebUI:

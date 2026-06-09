@@ -751,6 +751,7 @@ def health(as_json: bool):
     click.echo(f"Edges:        {ov['total_edges']}")
     click.echo(f"Orphan docs:  {ov['orphan_documents']} (no concepts)")
     click.echo(f"Isolated docs:{ov['isolated_documents']} (no edges)")
+    click.echo(f"Hub threshold:{ov['hub_threshold']} (df > threshold = hub)")
     click.echo()
 
     m = report["metrics"]
@@ -776,6 +777,12 @@ def health(as_json: bool):
     if report["top_concepts"]:
         click.echo("--- Top Concepts ---")
         for c in report["top_concepts"][:10]:
+            click.echo(f"  {c['label']} (df={c['df']})")
+        click.echo()
+
+    if report["hub_concepts"]:
+        click.echo("--- Hub Concepts (df > threshold, excluded from edges) ---")
+        for c in report["hub_concepts"][:10]:
             click.echo(f"  {c['label']} (df={c['df']})")
         click.echo()
 

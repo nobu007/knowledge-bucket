@@ -4,7 +4,7 @@ import os
 import sqlite3
 
 from .core import RECORDS_DIR
-from .graph import init_graph_tables
+from .graph import compute_hub_threshold, init_graph_tables
 from .index import index_path
 
 
@@ -105,6 +105,17 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
     connected_docs = total_docs - isolated_docs
     connectivity_ratio = connected_docs / total_docs if total_docs > 0 else 0.0
 
+    # Hub concepts: concepts exceeding dynamic hub threshold (GOAL.md section 10)
+    hub_threshold = compute_hub_threshold(conn)
+    hub_concepts = []
+    for row in conn.execute(
+        "SELECT concept_id, label, df FROM concepts "
+        "WHERE is_stop = 0 AND df > ? "
+        "ORDER BY df DESC LIMIT 20",
+        (hub_threshold,),
+    ).fetchall():
+        hub_concepts.append({"id": row[0], "label": row[1], "df": row[2]})
+
     return {
         "overview": {
             "total_documents": total_docs,
@@ -112,10 +123,12 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
             "total_edges": total_edges,
             "orphan_documents": orphan_docs,
             "isolated_documents": isolated_docs,
+            "hub_threshold": hub_threshold,
         },
         "source_types": source_types,
         "importance_distribution": importance_buckets,
         "top_concepts": top_concepts,
+        "hub_concepts": hub_concepts,
         "concepts_missing_notes": concepts_missing_notes,
         "metrics": {
             "avg_concepts_per_doc": round(avg_concepts, 2),
