@@ -1,11 +1,16 @@
-"""Tests for related module: document-document edges and kb related."""
+"""Tests for related module: document-document edges, concept co-occurrence, and kb related."""
 
 import os
 import tempfile
 
 from kb.graph import init_graph_tables
 from kb.index import init_db
-from kb.related import build_doc_edges, find_related
+from kb.related import (
+    build_concept_edges,
+    build_doc_edges,
+    find_cooccurring_concepts,
+    find_related,
+)
 
 
 def _setup_graph_db(tmp):
@@ -118,5 +123,141 @@ class TestFindRelated:
             conn = _setup_graph_db(tmp)
             build_doc_edges(conn)
             results = find_related(conn, "d1", limit=0)
+            assert len(results) == 0
+            conn.close()
+
+
+def _setup_cooc_db(tmp):
+    """Create a DB with concepts that co-occur across multiple documents."""
+    db = os.path.join(tmp, "index.db")
+    conn = init_db(db)
+    init_graph_tables(conn)
+
+    # Insert 5 docs into FTS
+    for i in range(1, 6):
+        conn.execute(
+            "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+            f"VALUES ('d{i}', 'Doc {i}', '', 'web', 'd{i}.md', 'Content {i}')"
+        )
+    conn.commit()
+
+    # Concepts with df >= 2 (required for co-occurrence)
+    concepts = [
+        ("rag", "RAG", 3),
+        ("graph-rag", "GraphRAG", 2),
+        ("knowledge-graph", "Knowledge Graph", 2),
+        ("embedding", "Embedding", 1),  # df=1, should be excluded
+        ("machine-learning", "Machine Learning", 1),  # df=1
+    ]
+    for cid, label, df in concepts:
+        conn.execute(
+            "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+            "VALUES (?, ?, ?, 0, '2026-01-01')",
+            (cid, label, df),
+        )
+    conn.commit()
+
+    # doc_concepts: rag+graph-rag co-occur in d1,d2; rag+knowledge-graph in d1,d3
+    assignments = {
+        "d1": ["rag", "graph-rag", "knowledge-graph"],
+        "d2": ["rag", "graph-rag"],
+        "d3": ["rag", "knowledge-graph"],
+        "d4": ["embedding"],
+        "d5": ["machine-learning"],
+    }
+    for doc_id, cids in assignments.items():
+        for c in cids:
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES (?, ?, 'primary', 1.0)",
+                (doc_id, c),
+            )
+    conn.commit()
+    return conn
+
+
+class TestBuildConceptEdges:
+    def test_creates_cooccurrence_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            edges = build_concept_edges(conn, min_cooccurrence=2)
+            # rag+graph-rag co-occur in d1,d2 (2 docs)
+            # rag+knowledge-graph co-occur in d1,d3 (2 docs)
+            assert edges >= 4  # 2 pairs × 2 bidirectional
+
+            row = conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE edge_type='cooccurrence'"
+            ).fetchone()
+            assert row[0] >= 4
+            conn.close()
+
+    def test_excludes_low_df_concepts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            # embedding and machine-learning have df=1, should not appear
+            emb_edges = conn.execute(
+                "SELECT COUNT(*) FROM edges "
+                "WHERE (src_id='embedding' OR dst_id='embedding') "
+                "AND edge_type='cooccurrence'"
+            ).fetchone()[0]
+            assert emb_edges == 0
+            conn.close()
+
+    def test_min_cooccurrence_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            # With min_cooccurrence=3, no pairs qualify (max cooc is 2)
+            edges = build_concept_edges(conn, min_cooccurrence=3)
+            assert edges == 0
+            conn.close()
+
+    def test_bidirectional_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            # rag→graph-rag and graph-rag→rag should both exist
+            fwd = conn.execute(
+                "SELECT weight FROM edges "
+                "WHERE src_id='rag' AND dst_id='graph-rag' AND edge_type='cooccurrence'"
+            ).fetchone()
+            bwd = conn.execute(
+                "SELECT weight FROM edges "
+                "WHERE src_id='graph-rag' AND dst_id='rag' AND edge_type='cooccurrence'"
+            ).fetchone()
+            assert fwd is not None
+            assert bwd is not None
+            assert fwd[0] == bwd[0]
+            conn.close()
+
+    def test_top_k_limits_edges_per_concept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            # With top_k=1, each concept gets at most 1 edge partner
+            build_concept_edges(conn, min_cooccurrence=2, top_k=1)
+            rag_count = conn.execute(
+                "SELECT COUNT(*) FROM edges "
+                "WHERE src_id='rag' AND edge_type='cooccurrence'"
+            ).fetchone()[0]
+            assert rag_count <= 1
+            conn.close()
+
+
+class TestFindCooccurringConcepts:
+    def test_returns_cooccurring_concepts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            results = find_cooccurring_concepts(conn, "rag")
+            assert len(results) >= 1
+            assert any(r["concept_id"] == "graph-rag" for r in results)
+            assert all("label" in r and "df" in r for r in results)
+            conn.close()
+
+    def test_no_cooccurrences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            results = find_cooccurring_concepts(conn, "embedding")
             assert len(results) == 0
             conn.close()

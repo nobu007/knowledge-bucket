@@ -28,7 +28,7 @@ from .graph import build_graph
 from .health import compute_health
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
-from .related import build_doc_edges, find_related
+from .related import build_concept_edges, build_doc_edges, find_related
 from .sync import sync
 from .vectors import build_vectors, semantic_search
 
@@ -275,14 +275,16 @@ def graph_cmd(subcommand: str):
     click.echo(f"Found {report['concepts_found']} unique concept(s)")
     click.echo(f"Scored {report['importance_scored']} document(s) for importance")
 
-    # Also build document-document edges
+    # Also build document-document edges and concept co-occurrence edges
     db = index_path(root)
     conn = sqlite3.connect(db)
     try:
-        edges = build_doc_edges(conn)
+        doc_edges = build_doc_edges(conn)
+        concept_edges = build_concept_edges(conn)
     finally:
         conn.close()
-    click.echo(f"Created {edges} document-document edge(s)")
+    click.echo(f"Created {doc_edges} document-document edge(s)")
+    click.echo(f"Created {concept_edges} concept co-occurrence edge(s)")
 
 
 @main.command("concepts")
@@ -748,7 +750,8 @@ def health(as_json: bool):
     click.echo()
     click.echo(f"Documents:    {ov['total_documents']}")
     click.echo(f"Concepts:     {ov['total_concepts']}")
-    click.echo(f"Edges:        {ov['total_edges']}")
+    click.echo(f"Edges:        {ov['total_edges']} (doc-doc)")
+    click.echo(f"Concept edges:{ov['concept_edges']} (co-occurrence)")
     click.echo(f"Orphan docs:  {ov['orphan_documents']} (no concepts)")
     click.echo(f"Isolated docs:{ov['isolated_documents']} (no edges)")
     click.echo(f"Hub threshold:{ov['hub_threshold']} (df > threshold = hub)")

@@ -2,8 +2,6 @@
 
 import sqlite3
 
-import pytest
-
 from kb.dedup import (
     check_duplicate,
     compute_content_hash,
@@ -11,7 +9,6 @@ from kb.dedup import (
     init_sources_table,
     register_source,
 )
-
 
 # --- generate_source_key ---
 

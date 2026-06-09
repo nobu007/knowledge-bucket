@@ -1,8 +1,8 @@
-"""Related-document discovery via shared concepts."""
+"""Related-document discovery via shared concepts and concept co-occurrence."""
 
 import sqlite3
 
-from .graph import compute_df, get_active_graph_terms
+from .graph import compute_df, compute_hub_threshold, get_active_graph_terms
 
 
 def build_doc_edges(conn: sqlite3.Connection, top_k: int = 10) -> int:
@@ -83,3 +83,82 @@ def find_related(conn: sqlite3.Connection, doc_id: str,
         results[0]["_query_terms"] = [t["concept_id"] for t in terms]
 
     return results
+
+
+def build_concept_edges(conn: sqlite3.Connection, min_cooccurrence: int = 2,
+                        top_k: int = 20) -> int:
+    """Generate concept→concept co-occurrence edges per GOAL.md section 12.
+
+    Two concepts co-occur when they appear in the same document. The edge
+    weight is the number of documents where both appear. Hub concepts and
+    stop concepts are excluded.
+
+    Returns the number of edges created.
+    """
+    hub_threshold = compute_hub_threshold(conn)
+
+    # Find all concept pairs that co-occur in the same document
+    rows = conn.execute(
+        "SELECT dc1.concept_id, dc2.concept_id, COUNT(*) as cooc "
+        "FROM doc_concepts dc1 "
+        "JOIN doc_concepts dc2 ON dc1.doc_id = dc2.doc_id "
+        "JOIN concepts c1 ON c1.concept_id = dc1.concept_id "
+        "JOIN concepts c2 ON c2.concept_id = dc2.concept_id "
+        "WHERE dc1.concept_id < dc2.concept_id "
+        "  AND c1.is_stop = 0 AND c2.is_stop = 0 "
+        "  AND c1.df <= ? AND c2.df <= ? "
+        "  AND c1.df >= 2 AND c2.df >= 2 "
+        "GROUP BY dc1.concept_id, dc2.concept_id "
+        "HAVING COUNT(*) >= ? "
+        "ORDER BY cooc DESC",
+        (hub_threshold, hub_threshold, min_cooccurrence),
+    ).fetchall()
+
+    from datetime import UTC, datetime
+    now = datetime.now(UTC).isoformat()
+
+    # Keep only top_k per concept
+    concept_edge_count: dict[str, int] = {}
+    edges = 0
+    for c1, c2, cooc in rows:
+        if concept_edge_count.get(c1, 0) >= top_k:
+            continue
+        if concept_edge_count.get(c2, 0) >= top_k:
+            continue
+
+        conn.execute(
+            "INSERT OR REPLACE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, 'cooccurrence', ?, ?)",
+            (c1, c2, float(cooc), now),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, 'cooccurrence', ?, ?)",
+            (c2, c1, float(cooc), now),
+        )
+        concept_edge_count[c1] = concept_edge_count.get(c1, 0) + 1
+        concept_edge_count[c2] = concept_edge_count.get(c2, 0) + 1
+        edges += 2  # bidirectional
+
+    conn.commit()
+    return edges
+
+
+def find_cooccurring_concepts(conn: sqlite3.Connection,
+                              concept_id: str, limit: int = 10) -> list[dict]:
+    """Find concepts that co-occur with the given concept."""
+    rows = conn.execute(
+        "SELECT e.dst_id, e.weight, c.label, c.df "
+        "FROM edges e "
+        "JOIN concepts c ON c.concept_id = e.dst_id "
+        "WHERE e.src_id = ? AND e.edge_type = 'cooccurrence' "
+        "ORDER BY e.weight DESC "
+        "LIMIT ?",
+        (concept_id, limit),
+    ).fetchall()
+    return [
+        {"concept_id": r[0], "cooccurrence": int(r[1]), "label": r[2], "df": r[3]}
+        for r in rows
+    ]

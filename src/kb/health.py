@@ -34,6 +34,9 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
     total_edges = conn.execute(
         "SELECT COUNT(*) FROM edges WHERE edge_type = 'related'"
     ).fetchone()[0]
+    concept_edges = conn.execute(
+        "SELECT COUNT(*) FROM edges WHERE edge_type = 'cooccurrence'"
+    ).fetchone()[0]
 
     # Orphan documents: docs with no concepts
     orphan_docs = conn.execute(
@@ -121,6 +124,7 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
             "total_documents": total_docs,
             "total_concepts": total_concepts,
             "total_edges": total_edges,
+            "concept_edges": concept_edges,
             "orphan_documents": orphan_docs,
             "isolated_documents": isolated_docs,
             "hub_threshold": hub_threshold,
