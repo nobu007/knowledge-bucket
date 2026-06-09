@@ -1,4 +1,4 @@
-"""Tests for CLI: kb init, kb add, kb show."""
+"""Tests for CLI: kb init, kb add, kb show, kb concept."""
 
 import os
 
@@ -150,3 +150,72 @@ class TestShow:
             assert result.exit_code == 0
             assert "Concepts:" in result.output
             assert "rust" in result.output
+
+
+class TestConcept:
+    def _setup_with_graph(self, runner):
+        """Init bucket, add doc with concepts, build graph."""
+        runner.invoke(main, ["init", "."])
+        result = runner.invoke(main, [
+            "add", "--title", "Rust Guide", "--source", "https://example.com/rust",
+            "--content", "Rust is a systems programming language.",
+            "--concepts", "rust, systems-programming",
+        ])
+        doc_id = None
+        for line in result.output.splitlines():
+            if line.startswith("Added:"):
+                doc_id = line.split(":")[1].strip()
+
+        # Build index and graph
+        runner.invoke(main, ["index", "--rebuild"])
+        runner.invoke(main, ["graph", "build"])
+        return doc_id
+
+    def test_concept_displays_metadata(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            self._setup_with_graph(runner)
+            result = runner.invoke(main, ["concept", "rust"])
+            assert result.exit_code == 0
+            assert "ID:       rust" in result.output
+            assert "Label:    rust" in result.output
+            assert "Kind:     concept" in result.output
+            assert "DF:       1" in result.output
+
+    def test_concept_shows_documents(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            self._setup_with_graph(runner)
+            result = runner.invoke(main, ["concept", "rust"])
+            assert result.exit_code == 0
+            assert "Documents" in result.output
+            assert "Rust Guide" in result.output
+
+    def test_concept_not_found(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            self._setup_with_graph(runner)
+            result = runner.invoke(main, ["concept", "nonexistent"])
+            assert result.exit_code == 1
+            assert "Concept not found" in result.output
+
+    def test_concept_requires_init(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ["concept", "rust"])
+            assert result.exit_code == 1
+            assert "Not in a knowledge bucket" in result.output
+
+    def test_concept_shows_note_file(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            self._setup_with_graph(runner)
+            # Create a concept note
+            os.makedirs(os.path.join("records", "concept"), exist_ok=True)
+            with open(os.path.join("records", "concept", "rust.md"), "w") as f:
+                f.write("# Rust\n\nA systems programming language.\n")
+
+            result = runner.invoke(main, ["concept", "rust"])
+            assert result.exit_code == 0
+            assert "Concept Note" in result.output
+            assert "systems programming language" in result.output

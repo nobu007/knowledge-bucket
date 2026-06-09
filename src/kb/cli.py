@@ -610,6 +610,74 @@ def show(doc_id: str, full: bool):
             click.echo(body.rstrip())
 
 
+@main.command("concept")
+@click.argument("concept_id")
+def concept_cmd(concept_id: str):
+    """Display concept metadata, associated documents, and note."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    db = index_path(root)
+    if not os.path.exists(db):
+        click.echo("No index found. Run 'kb graph build' first.", err=True)
+        raise SystemExit(1)
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT concept_id, label, kind, df, is_stop FROM concepts "
+            "WHERE concept_id = ?",
+            (concept_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        click.echo(f"Concept not found: {concept_id}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"ID:       {row[0]}")
+    click.echo(f"Label:    {row[1]}")
+    click.echo(f"Kind:     {row[2]}")
+    click.echo(f"DF:       {row[3]}")
+    if row[4]:
+        click.echo("Stop:     yes")
+
+    # Show associated documents
+    conn = sqlite3.connect(db)
+    try:
+        docs = conn.execute(
+            "SELECT dc.doc_id, d.title "
+            "FROM doc_concepts dc "
+            "LEFT JOIN docs d ON d.id = dc.doc_id "
+            "WHERE dc.concept_id = ? "
+            "ORDER BY dc.weight DESC "
+            "LIMIT 20",
+            (concept_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if docs:
+        click.echo()
+        click.echo(f"Documents ({len(docs)}):")
+        for doc_id, title in docs:
+            label = title or doc_id
+            click.echo(f"  [{doc_id}] {label}")
+
+    # Show concept note if it exists
+    concept_dir = os.path.join(root, RECORDS_DIR, "concept")
+    note_path = os.path.join(concept_dir, f"{concept_id}.md")
+    if os.path.exists(note_path):
+        with open(note_path) as f:
+            note = f.read().strip()
+        click.echo()
+        click.echo("--- Concept Note ---")
+        click.echo(note)
+
+
 @main.command()
 @click.argument("doc_id")
 @click.option("--raw-json", is_flag=True, help="Output raw analysis prompt as JSON")
