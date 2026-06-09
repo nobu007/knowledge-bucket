@@ -23,6 +23,7 @@ from .core import (
     kb_root,
     shard_path,
 )
+from .export import export_parquet
 from .graph import build_graph
 from .health import compute_health
 from .index import build_index, index_path, search_index, sync_index
@@ -623,6 +624,27 @@ def health(as_json: bool):
 
     if report["concepts_missing_notes"] > 0:
         click.echo(f"Concepts missing notes (df>=2): {report['concepts_missing_notes']}")
+
+
+@main.command()
+@click.option("--output", "-o", default=None, help="Output directory (default: .kb/exports)")
+def export(output: str | None):
+    """Export graph data to Parquet files for external analysis."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    try:
+        results = export_parquet(root, output_dir=output)
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1)
+
+    out_dir = output or os.path.join(root, ".kb", "exports")
+    click.echo(f"Exported to {out_dir}:")
+    for name, count in results.items():
+        click.echo(f"  {name}: {count} rows")
 
 
 @main.command()
