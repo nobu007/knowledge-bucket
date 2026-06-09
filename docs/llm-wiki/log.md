@@ -189,3 +189,16 @@ Append durable decisions and completed goal progress here.
   - numpy is optional dependency — vectorize and semantic search give clear error without it
   - Vectors stored as `.npz` in `.kb/` (regeneratable cache, gitignored)
 - **Phase 5 status**: graph health dashboard + Parquet export + vector index complete. Remaining: S3/R2 raw storage, shard repo, batch reanalysis
+
+## 2026-06-09: CLI spec gap — kb show
+
+- **Commit**: `826f83e` feat(kb): add kb show command to display document metadata and body
+- **What**:
+  - `kb show <doc_id>` CLI command: finds document file, parses front matter, displays id/title/source_type/source/created/updated/concepts/importance/body
+  - Body truncated at 20 lines by default; `--full` flag shows entire body
+  - Uses existing `_parse_front_matter_yaml` from `graph.py` and same file-walk lookup as `kb analyze`
+  - 6 new tests, 226 total pass, lint clean
+- **Decisions**:
+  - Same O(files) walk as `kb analyze` — acceptable at current scale, index-based lookup can be added later
+  - Concepts field supports both comma-separated string and YAML list formats
+- **Spec gap remaining**: `kb concept <concept_id>` still missing from GOAL.md section 15
