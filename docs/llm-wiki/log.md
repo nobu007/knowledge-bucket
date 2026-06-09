@@ -230,3 +230,18 @@ Append durable decisions and completed goal progress here.
   - Hub exclusion applied only to active graph terms and edge building, not to concept display or FTS search
   - Concepts that are both in stop_concepts.yml AND exceed hub threshold are still filtered by is_stop=0 first
 - **GOAL.md section 10 status**: hub detection complete
+
+## 2026-06-10: In-place document update on content change — GOAL.md section 18
+
+- **Commit**: `d698137` feat(kb): update existing documents in-place on content change per GOAL.md section 18
+- **What**:
+  - `ingest_file()` in `src/kb/ingest.py`: when a duplicate `source_key` is found with different `content_hash`, the existing document is updated in-place (front matter `updated_at` bumped, body replaced) instead of creating a new document
+  - `datetime` import moved to module level; `now` computed before duplicate check
+  - 2 new tests: exact duplicate skipped (same content_hash), changed content updates existing (same ULID, updated body)
+  - 314 total tests pass, lint clean
+- **Decisions**:
+  - Front matter preserved except for `updated:` line — title, concepts, and other metadata are not overwritten
+  - Body replaced entirely after the second `---` separator
+  - Sources table updated with new content_hash and timestamp via `register_source()`
+  - If existing file is missing from disk (manually deleted but source entry remains), falls through to create new document
+- **GOAL.md section 18 status**: update logic complete
