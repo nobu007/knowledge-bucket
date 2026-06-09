@@ -22,15 +22,33 @@ def create_app(kb_root: str) -> Flask:
     def index_page():
         q = request.args.get("q", "").strip()
         results = []
+        recent = []
+        db_file = index_path(kb_root)
         if q:
-            db = index_path(kb_root)
-            if os.path.exists(db):
-                conn = sqlite3.connect(db)
+            if os.path.exists(db_file):
+                conn = sqlite3.connect(db_file)
                 try:
                     results = search_index(conn, q, limit=50)
                 finally:
                     conn.close()
-        return render_template_string(_INDEX_HTML, query=q, results=results)
+        else:
+            if os.path.exists(db_file):
+                conn = sqlite3.connect(db_file)
+                try:
+                    rows = conn.execute(
+                        "SELECT id, title, source, source_type FROM docs "
+                        "ORDER BY id DESC LIMIT 20"
+                    ).fetchall()
+                    recent = [
+                        {"id": r[0], "title": r[1], "source": r[2],
+                         "source_type": r[3]}
+                        for r in rows
+                    ]
+                finally:
+                    conn.close()
+        return render_template_string(
+            _INDEX_HTML, query=q, results=results, recent=recent,
+        )
 
     @app.route("/doc/<doc_id>")
     def doc_detail(doc_id: str):
@@ -72,6 +90,50 @@ def create_app(kb_root: str) -> Flask:
             concepts=concepts,
             related=related_docs,
         )
+
+    @app.route("/recent")
+    def recent_page():
+        docs = []
+        db = index_path(kb_root)
+        if os.path.exists(db):
+            conn = sqlite3.connect(db)
+            try:
+                rows = conn.execute(
+                    "SELECT id, title, source, source_type FROM docs "
+                    "ORDER BY id DESC LIMIT 50"
+                ).fetchall()
+                docs = [
+                    {"id": r[0], "title": r[1], "source": r[2],
+                     "source_type": r[3]}
+                    for r in rows
+                ]
+            finally:
+                conn.close()
+        return render_template_string(_RECENT_HTML, docs=docs)
+
+    @app.route("/api/recent")
+    def api_recent():
+        limit = request.args.get("limit", 20, type=int)
+        limit = min(limit, 100)
+        db = index_path(kb_root)
+        if not os.path.exists(db):
+            return {"docs": []}
+        conn = sqlite3.connect(db)
+        try:
+            rows = conn.execute(
+                "SELECT id, title, source, source_type FROM docs "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {
+            "docs": [
+                {"id": r[0], "title": r[1], "source": r[2],
+                 "source_type": r[3]}
+                for r in rows
+            ],
+        }
 
     @app.route("/api/search")
     def api_search():
@@ -313,6 +375,7 @@ input[type=text] {
 <h1>Knowledge Bucket</h1>
 <nav style="margin-bottom:1.5rem;font-size:0.9rem;">
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -337,6 +400,23 @@ input[type=text] {
   <div class="result-snippet">{{ r.snippet }}</div>
 </div>
 {% endfor %}
+{% if not query and recent %}
+<h2 style="font-size:1.1rem;margin-bottom:0.75rem;">Recent Documents</h2>
+{% for r in recent %}
+<div class="result">
+  <div class="result-title">
+    <a href="/doc/{{ r.id }}">{{ r.title or r.id }}</a>
+  </div>
+  <div class="result-meta">
+    {{ r.source_type }}
+    {%- if r.source %} &middot; {{ r.source }}{% endif %}
+  </div>
+</div>
+{% endfor %}
+<p style="margin-top:1rem;font-size:0.85rem;">
+  <a href="/recent">View more recent documents</a>
+</p>
+{% endif %}
 </body>
 </html>
 """
@@ -382,6 +462,7 @@ h2 {
 <body>
 <nav style="margin-bottom:1rem;font-size:0.9rem;">
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -418,6 +499,55 @@ h2 {
 </html>
 """
 
+_RECENT_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recent Documents - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 800px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a;
+}
+h1 { margin-bottom: 1rem; font-size: 1.5rem; }
+nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
+nav a { color: #2563eb; text-decoration: none; }
+.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
+.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
+.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
+.empty { color: #888; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Recent Documents</h1>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a>
+</nav>
+{% if not docs %}
+<p class="empty">No documents yet. Use <code>kb add</code> to add documents.</p>
+{% endif %}
+{% for d in docs %}
+<div class="doc-item">
+  <a href="/doc/{{ d.id }}">{{ d.title or d.id }}</a>
+  <div class="meta">
+    {{ d.source_type }}
+    {%- if d.source %} &middot; {{ d.source }}{% endif %}
+  </div>
+</div>
+{% endfor %}
+</body>
+</html>
+"""
+
 _CATEGORIES_HTML = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -448,6 +578,7 @@ nav a { color: #2563eb; text-decoration: none; }
 <h1>Categories</h1>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -493,6 +624,7 @@ nav a { color: #2563eb; text-decoration: none; }
 <body>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -548,6 +680,7 @@ nav a { color: #2563eb; text-decoration: none; }
 <body>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -657,6 +790,7 @@ nav a { color: #2563eb; text-decoration: none; }
 <h1>Concepts</h1>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -713,6 +847,7 @@ nav a { color: #2563eb; text-decoration: none; }
 <body>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
@@ -803,6 +938,7 @@ h2 {
 <h1>Graph Health</h1>
 <nav>
   <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;

@@ -330,3 +330,67 @@ class TestConceptDetail:
         doc_nodes = [n for n in data["nodes"] if n["type"] == "doc"]
         assert any(n["label"] == "rag" for n in concept_nodes)
         assert any(n["label"] == "RAG Overview" for n in doc_nodes)
+
+
+class TestRecentPage:
+    def test_recent_empty(self, client):
+        resp = client.get("/recent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Recent Documents" in html
+        assert "No documents yet" in html
+
+    def test_recent_with_docs(self, kb, client):
+        d1, _ = _add_doc(kb, title="First doc")
+        d2, _ = _add_doc(kb, title="Second doc")
+        _index_doc(kb, d1, "First doc")
+        _index_doc(kb, d2, "Second doc")
+
+        resp = client.get("/recent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Second doc" in html
+        assert "First doc" in html
+
+    def test_api_recent(self, kb, client):
+        d1, _ = _add_doc(kb, title="Doc A")
+        d2, _ = _add_doc(kb, title="Doc B")
+        _index_doc(kb, d1, "Doc A")
+        _index_doc(kb, d2, "Doc B")
+
+        resp = client.get("/api/recent")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["docs"]) == 2
+        # ULIDs are time-sortable so Doc B (added second) comes first
+        assert data["docs"][0]["title"] == "Doc B"
+        assert data["docs"][1]["title"] == "Doc A"
+
+    def test_api_recent_limit(self, kb, client):
+        for i in range(5):
+            d, _ = _add_doc(kb, title=f"Doc {i}")
+            _index_doc(kb, d, f"Doc {i}")
+
+        resp = client.get("/api/recent?limit=2")
+        data = resp.get_json()
+        assert len(data["docs"]) == 2
+
+    def test_homepage_shows_recent_when_no_query(self, kb, client):
+        d, _ = _add_doc(kb, title="Homepage Recent Doc")
+        _index_doc(kb, d, "Homepage Recent Doc")
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Recent Documents" in html
+        assert "Homepage Recent Doc" in html
+        assert "View more recent documents" in html
+
+    def test_homepage_no_recent_when_searching(self, kb, client):
+        d, _ = _add_doc(kb, title="Should not show recent")
+        _index_doc(kb, d, "Should not show recent")
+
+        resp = client.get("/?q=test")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Recent Documents" not in html
