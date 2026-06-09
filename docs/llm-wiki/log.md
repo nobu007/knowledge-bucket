@@ -202,3 +202,16 @@ Append durable decisions and completed goal progress here.
   - Same O(files) walk as `kb analyze` — acceptable at current scale, index-based lookup can be added later
   - Concepts field supports both comma-separated string and YAML list formats
 - **Spec gap remaining**: `kb concept <concept_id>` still missing from GOAL.md section 15
+
+## 2026-06-09: CLI spec gap — kb concept
+
+- **Commit**: `0eeb3be` feat(kb): add kb concept command to display concept metadata and documents
+- **What**:
+  - `kb concept <concept_id>` CLI command: looks up concept in SQLite `concepts` table, displays id/label/kind/df/stop status
+  - Lists associated documents (up to 20) with titles from FTS index
+  - Shows concept note from `records/concept/<concept_id>.md` if it exists
+  - 5 new tests, 231 total pass, lint clean
+- **Decisions**:
+  - Reuses existing SQLite schema (concepts, doc_concepts, docs tables)
+  - Documents limited to 20 results; concept note displayed inline below separator
+- **GOAL.md section 15 CLI spec status**: all commands now implemented (init, add, ingest, index, search, show, related, concept, export, sync)
