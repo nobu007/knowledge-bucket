@@ -1,5 +1,6 @@
 """Ingest pipeline: process inbox files into proper records."""
 
+import datetime
 import os
 import re
 
@@ -60,9 +61,10 @@ def _body_from_content(content: str, source_url: str | None) -> str:
 def ingest_file(root: str, filepath: str) -> str | None:
     """Process a single inbox file into a record.
 
-    Returns the ULID of the new document, or None if skipped.
+    Returns the ULID of the new or updated document, or None if skipped.
     If a duplicate source_key exists and content_hash matches, skips the file.
-    If a duplicate source_key exists but content changed, creates a new document.
+    If a duplicate source_key exists but content changed, updates the existing
+    document in-place (GOAL.md section 18).
     """
     basename = os.path.basename(filepath)
     _, ext = os.path.splitext(basename)
@@ -90,17 +92,45 @@ def ingest_file(root: str, filepath: str) -> str | None:
     )
     content_hash = compute_content_hash(body)
 
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+
     # Check for duplicates via sources table
     db_path = index_path(root)
     conn = init_db(db_path)
     init_sources_table(conn)
     try:
         existing = check_duplicate(conn, source_key)
-        if existing and existing["content_hash"] == content_hash:
-            # Exact duplicate — skip
-            conn.close()
-            os.remove(filepath)
-            return None
+        if existing:
+            if existing["content_hash"] == content_hash:
+                # Exact duplicate — skip
+                conn.close()
+                os.remove(filepath)
+                return None
+            # Content changed — update existing document in-place (GOAL.md section 18)
+            existing_ulid = existing["last_doc_id"]
+            existing_rel = shard_path(existing_ulid)
+            existing_abs = os.path.join(root, RECORDS_DIR, DOC_DIR, existing_rel)
+            if os.path.exists(existing_abs):
+                with open(existing_abs) as f:
+                    text = f.read()
+                # Update the updated_at line in front matter
+                updated_text = re.sub(
+                    r"^updated:.*$", f"updated: {now}", text,
+                    count=1, flags=re.MULTILINE,
+                )
+                # Replace body (everything after the second ---)
+                fm_end = updated_text.find("---\n", 4)
+                if fm_end >= 0:
+                    updated_text = updated_text[: fm_end + 4] + "\n" + body
+                with open(existing_abs, "w") as f:
+                    f.write(updated_text)
+                register_source(
+                    conn, source_key, source_url, existing_ulid, content_hash, now,
+                )
+                conn.close()
+                os.remove(filepath)
+                return existing_ulid
+            # Existing file missing — fall through to create new
     except Exception:
         conn.close()
         raise
@@ -109,9 +139,6 @@ def ingest_file(root: str, filepath: str) -> str | None:
     os.makedirs(abs_dir, exist_ok=True)
     abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel)
 
-    import datetime
-
-    now = datetime.datetime.now(datetime.UTC).isoformat()
     front_matter = f"---\nid: {ulid}\ntitle: {title}\nsource_type: {source_type}\n"
     front_matter += f"source_key: {source_key}\n"
     front_matter += f"created: {now}\nupdated: {now}\n"

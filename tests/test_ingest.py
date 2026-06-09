@@ -196,6 +196,66 @@ class TestIngestInbox:
             ]
             assert "bad.jpg" in remaining
 
+    def test_exact_duplicate_skipped(self):
+        """Same source_key + same content → skip, no new document."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "article.url")
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/article")
+            ulid1 = ingest_file(tmp, inbox_path)
+            assert ulid1 is not None
+
+            # Add identical file again
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/article")
+            ulid2 = ingest_file(tmp, inbox_path)
+            assert ulid2 is None  # skipped
+            assert not os.path.exists(inbox_path)  # file consumed
+
+    def test_changed_content_updates_existing(self):
+        """Same source_key + different content → update existing document (GOAL.md section 18)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+
+            # First ingest: create document
+            inbox_path = os.path.join(tmp, INBOX_DIR, "article.url")
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/article")
+            ulid1 = ingest_file(tmp, inbox_path)
+            assert ulid1 is not None
+
+            from kb.core import shard_path
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, shard_path(ulid1))
+            with open(doc_path) as f:
+                text1 = f.read()
+            assert "https://example.com/article" in text1
+
+            # Second ingest: same URL, but now with extra content (different body)
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/article\n\nUpdated article content here")
+            ulid2 = ingest_file(tmp, inbox_path)
+            assert ulid2 == ulid1  # same ULID — updated in-place
+            assert not os.path.exists(inbox_path)  # file consumed
+
+            with open(doc_path) as f:
+                text2 = f.read()
+            assert "Updated article content here" in text2
+            assert text2 != text1  # content actually changed
+
+            # Verify updated_at was bumped
+            import re
+            updated_match = re.findall(r"^updated: (.+)$", text2, re.MULTILINE)
+            assert len(updated_match) == 1
+
+            # Verify no second document was created
+            doc_count = 0
+            for _dirpath, _dirnames, filenames in os.walk(
+                os.path.join(tmp, RECORDS_DIR, DOC_DIR)
+            ):
+                doc_count += sum(1 for fn in filenames if fn.endswith(".md"))
+            assert doc_count == 1
+
     def test_records_searchable_after_ingest(self):
         with tempfile.TemporaryDirectory() as tmp:
             ensure_dirs(tmp)
