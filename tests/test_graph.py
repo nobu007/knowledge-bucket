@@ -649,7 +649,7 @@ def _make_doc_with_entities(root, doc_id, title, concepts_dict=None):
     fm = f"---\nid: {doc_id}\ntitle: {title}\nsource_type: web\n"
     if concepts_dict is not None:
         import yaml
-        fm += f"concepts:\n"
+        fm += "concepts:\n"
         for key, items in concepts_dict.items():
             fm += f"  {key}:\n"
             for item in items:

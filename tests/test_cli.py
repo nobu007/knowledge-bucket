@@ -219,3 +219,31 @@ class TestConcept:
             assert result.exit_code == 0
             assert "Concept Note" in result.output
             assert "systems programming language" in result.output
+
+    def test_concept_shows_cooccurring(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            # Add docs where rust+systems-programming co-occur in 2+ docs
+            runner.invoke(main, [
+                "add", "--title", "Rust Guide", "--source", "https://example.com/rust",
+                "--content", "Rust is a systems programming language.",
+                "--concepts", "rust, systems-programming",
+            ])
+            runner.invoke(main, [
+                "add", "--title", "Rust Patterns", "--source", "https://example.com/patterns",
+                "--content", "Design patterns in Rust.",
+                "--concepts", "rust, systems-programming, design-patterns",
+            ])
+            runner.invoke(main, [
+                "add", "--title", "Rust Memory", "--source", "https://example.com/memory",
+                "--content", "Memory management in Rust.",
+                "--concepts", "rust, systems-programming",
+            ])
+            # Build index and graph (which builds co-occurrence edges)
+            runner.invoke(main, ["index", "--rebuild"])
+            runner.invoke(main, ["graph", "build"])
+
+            result = runner.invoke(main, ["concept", "rust"])
+            assert result.exit_code == 0
+            assert "Co-occurring concepts" in result.output

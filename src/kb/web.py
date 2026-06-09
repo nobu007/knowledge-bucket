@@ -9,7 +9,7 @@ from .core import DOC_DIR, RECORDS_DIR
 from .graph import _parse_front_matter_yaml, init_graph_tables
 from .health import compute_health
 from .index import index_path, search_index
-from .related import find_related
+from .related import find_cooccurring_concepts, find_related
 
 _VALID_SOURCE_TYPES = {"web", "paper", "pdf", "git_repo", "repo", "video", "memo"}
 
@@ -263,13 +263,16 @@ def create_app(kb_root: str) -> Flask:
                     (concept_id,),
                 ).fetchone()
                 concept_label = label_row[0] if label_row else concept_id
+                cooc = find_cooccurring_concepts(conn, concept_id, limit=15)
             finally:
                 conn.close()
         else:
             concept_label = concept_id
+            cooc = []
         return render_template_string(
             _CONCEPT_DETAIL_HTML,
             concept_id=concept_id, concept_label=concept_label, docs=docs,
+            cooc=cooc,
         )
 
     return app
@@ -694,6 +697,17 @@ nav a { color: #2563eb; text-decoration: none; }
 .doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
 .doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
 .empty { color: #888; margin-top: 1rem; }
+.cooc-item {
+  display: inline-block; background: #eff6ff;
+  padding: 3px 10px; border-radius: 3px; margin: 2px;
+  font-size: 0.85rem;
+}
+.cooc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
+.cooc-item .cooc-count { color: #666; font-size: 0.8rem; }
+.section-title {
+  font-size: 1.1rem; margin: 1.5rem 0 0.5rem;
+  border-bottom: 1px solid #eee; padding-bottom: 0.3rem;
+}
 </style>
 </head>
 <body>
@@ -717,6 +731,17 @@ nav a { color: #2563eb; text-decoration: none; }
   </div>
 </div>
 {% endfor %}
+{% if cooc %}
+<h2 class="section-title">Co-occurring Concepts</h2>
+<div>
+{% for c in cooc %}
+  <span class="cooc-item">
+    <a href="/concepts/{{ c.concept_id }}">{{ c.label }}</a>
+    <span class="cooc-count">({{ c.cooccurrence }})</span>
+  </span>
+{% endfor %}
+</div>
+{% endif %}
 </body>
 </html>
 """

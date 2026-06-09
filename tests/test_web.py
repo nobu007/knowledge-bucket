@@ -276,8 +276,32 @@ class TestConceptDetail:
         html = resp.data.decode()
         assert "No documents" in html
 
+    def test_concept_shows_cooccurring(self, kb, client):
+        from kb.graph import compute_df
+        from kb.index import index_path
+        from kb.related import build_concept_edges
 
-class TestGraphPage:
+        # Both docs share rag and llm so both concepts reach df=2
+        d1, _ = _add_doc(kb, title="RAG Overview", concepts=["rag", "llm"])
+        d2, _ = _add_doc(kb, title="RAG Pipeline", concepts=["rag", "llm"])
+        _index_doc(kb, d1, "RAG Overview")
+        _index_doc(kb, d2, "RAG Pipeline")
+        _setup_graph(kb, d1, concepts=["rag", "llm"])
+        _setup_graph(kb, d2, concepts=["rag", "llm"])
+
+        # Build co-occurrence edges
+        db = index_path(kb)
+        conn = init_db(db)
+        try:
+            compute_df(conn)
+            build_concept_edges(conn, min_cooccurrence=1)
+        finally:
+            conn.close()
+
+        resp = client.get("/concepts/rag")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Co-occurring Concepts" in html
     def test_graph_page_renders(self, client):
         resp = client.get("/graph")
         assert resp.status_code == 200

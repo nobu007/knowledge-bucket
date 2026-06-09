@@ -28,7 +28,7 @@ from .graph import build_graph
 from .health import compute_health
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
-from .related import build_concept_edges, build_doc_edges, find_related
+from .related import build_concept_edges, build_doc_edges, find_cooccurring_concepts, find_related
 from .sync import sync
 from .vectors import build_vectors, semantic_search
 
@@ -672,6 +672,18 @@ def concept_cmd(concept_id: str):
         for doc_id, title in docs:
             label = title or doc_id
             click.echo(f"  [{doc_id}] {label}")
+
+    # Show co-occurring concepts
+    conn = sqlite3.connect(db)
+    try:
+        cooc = find_cooccurring_concepts(conn, concept_id, limit=10)
+    finally:
+        conn.close()
+    if cooc:
+        click.echo()
+        click.echo(f"Co-occurring concepts ({len(cooc)}):")
+        for c in cooc:
+            click.echo(f"  {c['label']} (co-occurrence: {c['cooccurrence']}, df={c['df']})")
 
     # Show concept note if it exists
     concept_dir = os.path.join(root, RECORDS_DIR, "concept")
