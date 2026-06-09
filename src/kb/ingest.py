@@ -4,6 +4,14 @@ import os
 import re
 
 from .core import DOC_DIR, INBOX_DIR, RECORDS_DIR, generate_ulid, shard_path
+from .dedup import (
+    check_duplicate,
+    compute_content_hash,
+    generate_source_key,
+    init_sources_table,
+    register_source,
+)
+from .index import index_path, init_db
 
 _URL_RE = re.compile(r"https?://\S+")
 _SUPPORTED_EXT = {".md", ".txt", ".url"}
@@ -53,6 +61,8 @@ def ingest_file(root: str, filepath: str) -> str | None:
     """Process a single inbox file into a record.
 
     Returns the ULID of the new document, or None if skipped.
+    If a duplicate source_key exists and content_hash matches, skips the file.
+    If a duplicate source_key exists but content changed, creates a new document.
     """
     basename = os.path.basename(filepath)
     _, ext = os.path.splitext(basename)
@@ -71,7 +81,29 @@ def ingest_file(root: str, filepath: str) -> str | None:
     title, source_url, source_type = _classify_file(basename, content)
     body = _body_from_content(content, source_url)
 
+    # Generate ULID first so memo source_key is unique
     ulid = generate_ulid()
+
+    # Generate source_key and content_hash for dedup
+    source_key = generate_source_key(
+        source_type, source_url=source_url, title=title, doc_ulid=ulid,
+    )
+    content_hash = compute_content_hash(body)
+
+    # Check for duplicates via sources table
+    db_path = index_path(root)
+    conn = init_db(db_path)
+    init_sources_table(conn)
+    try:
+        existing = check_duplicate(conn, source_key)
+        if existing and existing["content_hash"] == content_hash:
+            # Exact duplicate — skip
+            conn.close()
+            os.remove(filepath)
+            return None
+    except Exception:
+        conn.close()
+        raise
     rel = shard_path(ulid)
     abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
     os.makedirs(abs_dir, exist_ok=True)
@@ -89,6 +121,10 @@ def ingest_file(root: str, filepath: str) -> str | None:
     with open(abs_path, "w") as f:
         f.write(front_matter)
         f.write(body)
+
+    # Register source for future dedup
+    register_source(conn, source_key, source_url, ulid, content_hash, now)
+    conn.close()
 
     os.remove(filepath)
     return ulid

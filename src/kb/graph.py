@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import yaml
 
 from .core import CONFIG_DIR, DOC_DIR, RECORDS_DIR
+from .dedup import init_sources_table
 from .index import _FM_RE, index_path, init_db
 
 
@@ -43,6 +44,7 @@ def init_graph_tables(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
     """)
+    init_sources_table(conn)
     conn.commit()
 
 
