@@ -156,6 +156,89 @@ class TestComputeHealth:
         # rag has df=2 and no note file
         assert report["concepts_missing_notes"] >= 1
 
+    def test_duplicate_rate_zero_with_unique_docs(self, kb):
+        doc1 = _add_doc(kb, title="Doc A", body="unique content a")
+        _index_doc(kb, doc1, "Doc A", content="unique content a")
+        _setup_graph(kb, doc1, concepts=["rag"])
+
+        doc2 = _add_doc(kb, title="Doc B", body="unique content b")
+        _index_doc(kb, doc2, "Doc B", content="unique content b")
+        _setup_graph(kb, doc2, concepts=["llm"])
+
+        report = compute_health(kb)
+        assert report["metrics"]["duplicate_rate"] == 0.0
+
+    def test_duplicate_rate_detects_same_hash(self, kb):
+        import hashlib
+
+        body = "identical content here"
+        ch = f"sha256:{hashlib.sha256(body.encode()).hexdigest()}"
+
+        doc1 = _add_doc(kb, title="Doc A", body=body)
+        _index_doc(kb, doc1, "Doc A", content=body)
+
+        doc2 = _add_doc(kb, title="Doc B", body=body)
+        _index_doc(kb, doc2, "Doc B", content=body)
+
+        # Manually add content_hash to front matter of both docs
+        from kb.core import shard_path
+        for doc_id in (doc1, doc2):
+            rel = shard_path(doc_id)
+            path = os.path.join(kb, RECORDS_DIR, DOC_DIR, rel)
+            with open(path) as f:
+                text = f.read()
+            text = text.replace(
+                f"source_type: web\n",
+                f"source_type: web\ncontent_hash: {ch}\n",
+            )
+            with open(path, "w") as f:
+                f.write(text)
+
+        report = compute_health(kb)
+        assert report["metrics"]["duplicate_rate"] == 0.5  # 1 dup out of 2
+
+    def test_max_degree_zero_no_edges(self, kb):
+        doc1 = _add_doc(kb, title="Doc A")
+        _index_doc(kb, doc1, "Doc A")
+        _setup_graph(kb, doc1, concepts=["rag"])
+
+        report = compute_health(kb)
+        assert report["metrics"]["max_degree"] == 0
+
+    def test_max_degree_with_edges(self, kb):
+        from datetime import UTC, datetime
+
+        doc1 = _add_doc(kb, title="Doc A")
+        _index_doc(kb, doc1, "Doc A")
+        _setup_graph(kb, doc1, concepts=["rag"])
+
+        doc2 = _add_doc(kb, title="Doc B")
+        _index_doc(kb, doc2, "Doc B")
+        _setup_graph(kb, doc2, concepts=["rag"])
+
+        doc3 = _add_doc(kb, title="Doc C")
+        _index_doc(kb, doc3, "Doc C")
+
+        now = datetime.now(UTC).isoformat()
+        from kb.index import index_path
+        db = index_path(kb)
+        conn = init_db(db)
+        conn.execute(
+            "INSERT INTO edges (src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, 'related', 1.0, ?)",
+            (doc1, doc2, now),
+        )
+        conn.execute(
+            "INSERT INTO edges (src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, 'related', 1.0, ?)",
+            (doc1, doc3, now),
+        )
+        conn.commit()
+        conn.close()
+
+        report = compute_health(kb)
+        assert report["metrics"]["max_degree"] == 2  # doc1 has 2 related edges
+
     def test_hub_concepts_detected(self, kb):
         doc1 = _add_doc(kb, title="Doc", concepts=["rag", "common-term"])
         _index_doc(kb, doc1, "Doc")

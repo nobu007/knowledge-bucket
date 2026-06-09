@@ -3,9 +3,9 @@
 import os
 import sqlite3
 
-from .core import RECORDS_DIR
+from .core import DOC_DIR, RECORDS_DIR
 from .graph import compute_hub_threshold, init_graph_tables
-from .index import index_path
+from .index import _FM_RE, index_path
 
 
 def compute_health(root: str) -> dict:
@@ -119,6 +119,43 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
     ).fetchall():
         hub_concepts.append({"id": row[0], "label": row[1], "df": row[2]})
 
+    # Duplicate rate: scan documents for duplicate content_hash (GOAL.md section 23)
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    hash_to_count: dict[str, int] = {}
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if not fn.endswith(".md"):
+                continue
+            filepath = os.path.join(dirpath, fn)
+            try:
+                with open(filepath) as f:
+                    text = f.read()
+            except OSError:
+                continue
+            m = _FM_RE.match(text)
+            if m:
+                for line in m.group(1).split("\n"):
+                    if line.startswith("content_hash:"):
+                        ch = line.split(":", 1)[1].strip()
+                        hash_to_count[ch] = hash_to_count.get(ch, 0) + 1
+                        break
+
+    duplicate_docs = sum(c - 1 for c in hash_to_count.values() if c > 1)
+    duplicate_rate = round(duplicate_docs / total_docs, 4) if total_docs > 0 else 0.0
+
+    # Max degree: most related-edges any single document participates in (section 23)
+    max_degree = conn.execute(
+        "SELECT MAX(degree) FROM ("
+        "  SELECT id, SUM(cnt) as degree FROM ("
+        "    SELECT src_id as id, COUNT(*) as cnt FROM edges "
+        "    WHERE edge_type = 'related' GROUP BY src_id"
+        "    UNION ALL"
+        "    SELECT dst_id as id, COUNT(*) as cnt FROM edges "
+        "    WHERE edge_type = 'related' GROUP BY dst_id"
+        "  ) GROUP BY id"
+        ")"
+    ).fetchone()[0] or 0
+
     return {
         "overview": {
             "total_documents": total_docs,
@@ -138,5 +175,7 @@ def _gather_metrics(conn: sqlite3.Connection, root: str) -> dict:
             "avg_concepts_per_doc": round(avg_concepts, 2),
             "avg_edges_per_doc": round(avg_edges, 2),
             "connectivity_ratio": round(connectivity_ratio, 3),
+            "duplicate_rate": duplicate_rate,
+            "max_degree": max_degree,
         },
     }
