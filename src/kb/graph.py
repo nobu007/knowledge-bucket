@@ -1,5 +1,6 @@
 """Graph construction: concept extraction, normalization, df/idf, edges."""
 
+import math
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -64,6 +65,18 @@ def load_stop_concepts(root: str) -> set[str]:
     with open(path) as f:
         data = yaml.safe_load(f)
     return set(data.get("stop_concepts", [])) if data else set()
+
+
+def load_user_interests(root: str) -> set[str]:
+    path = os.path.join(root, CONFIG_DIR, "kb.yml")
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if not data:
+        return set()
+    interests = data.get("user_interests", [])
+    return set(interests) if interests else set()
 
 
 def normalize_concept(raw: str, aliases: dict[str, str]) -> str:
@@ -205,6 +218,61 @@ def compute_hub_threshold(conn: sqlite3.Connection) -> int:
     return min(5000, max(50, int(0.002 * n)))
 
 
+def score_graph_term(
+    concept_id: str,
+    label: str,
+    df: int,
+    weight: float,
+    total_docs: int,
+    hub_threshold: int,
+    user_interests: set[str] | None = None,
+) -> float:
+    """Multi-factor scoring for active graph term selection (GOAL.md section 11).
+
+    score = 0.40 * AI weight
+          + 0.25 * normalized IDF
+          + 0.15 * technical term boost
+          + 0.10 * compound term boost
+          + 0.10 * user interest match
+          - generic penalty (df/N)
+          - hub penalty ((df/threshold)^2)
+    """
+    ai_score = min(1.0, max(0.0, weight))
+
+    if total_docs > 0:
+        idf = math.log(1 + total_docs / (df + 1))
+        max_idf = math.log(1 + total_docs)
+        idf_norm = idf / max_idf if max_idf > 0 else 0.0
+    else:
+        idf_norm = 0.0
+
+    tech_boost = 0.0
+    if "-" in concept_id:
+        tech_boost += 0.5
+    if any(c.isupper() for c in label):
+        tech_boost += 0.5
+    tech_boost = min(1.0, tech_boost)
+
+    segments = concept_id.split("-")
+    compound_boost = min(1.0, len(segments) / 3.0)
+
+    interest_score = 1.0 if user_interests and concept_id in user_interests else 0.0
+
+    generic_penalty = (df / total_docs) if total_docs > 0 else 0.0
+    hub_penalty = (df / hub_threshold) ** 2 if hub_threshold > 0 else 0.0
+
+    score = (
+        0.40 * ai_score
+        + 0.25 * idf_norm
+        + 0.15 * tech_boost
+        + 0.10 * compound_boost
+        + 0.10 * interest_score
+        - generic_penalty
+        - hub_penalty
+    )
+    return max(0.0, score)
+
+
 def compute_df(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE concepts SET df = COALESCE("
@@ -216,23 +284,34 @@ def compute_df(conn: sqlite3.Connection) -> None:
 
 def get_active_graph_terms(conn: sqlite3.Connection, doc_id: str,
                            max_terms: int = 5,
-                           hub_threshold: int | None = None) -> list[dict]:
+                           hub_threshold: int | None = None,
+                           user_interests: set[str] | None = None) -> list[dict]:
     if hub_threshold is None:
         hub_threshold = compute_hub_threshold(conn)
+    total_docs = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
     rows = conn.execute(
         "SELECT c.concept_id, c.label, c.df, dc.weight "
         "FROM doc_concepts dc "
         "JOIN concepts c ON c.concept_id = dc.concept_id "
         "WHERE dc.doc_id = ? AND c.df >= 2 AND c.is_stop = 0 "
-        "  AND c.df <= ? "
-        "ORDER BY dc.weight DESC, c.df ASC "
-        "LIMIT ?",
-        (doc_id, hub_threshold, max_terms),
+        "  AND c.df <= ? ",
+        (doc_id, hub_threshold),
     ).fetchall()
-    return [
-        {"concept_id": r[0], "label": r[1], "df": r[2], "weight": r[3]}
-        for r in rows
-    ]
+    scored = []
+    for concept_id, label, df, weight in rows:
+        s = score_graph_term(
+            concept_id, label, df, weight,
+            total_docs, hub_threshold, user_interests,
+        )
+        scored.append({
+            "concept_id": concept_id,
+            "label": label,
+            "df": df,
+            "weight": weight,
+            "score": s,
+        })
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:max_terms]
 
 
 _SOURCE_TYPE_WEIGHTS: dict[str, float] = {

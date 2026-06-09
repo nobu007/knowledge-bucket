@@ -14,7 +14,9 @@ from kb.graph import (
     init_graph_tables,
     load_aliases,
     load_stop_concepts,
+    load_user_interests,
     normalize_concept,
+    score_graph_term,
 )
 from kb.index import index_path, init_db
 
@@ -422,4 +424,169 @@ class TestGetActiveGraphTermsHubExclusion:
             # With explicit threshold=3, df=5 should be excluded
             terms = get_active_graph_terms(conn, "d1", hub_threshold=3)
             assert len(terms) == 0
+            conn.close()
+
+
+class TestScoreGraphTerm:
+    def test_ai_weight_dominant(self):
+        # High AI weight should dominate score
+        high = score_graph_term("rag", "RAG", 2, 1.0, 100, 50)
+        low = score_graph_term("rag", "RAG", 2, 0.1, 100, 50)
+        assert high > low
+
+    def test_idf_rarity_boost(self):
+        # Rare concept (low df) gets higher IDF score
+        rare = score_graph_term("x", "x", 2, 1.0, 1000, 50)
+        common = score_graph_term("x", "x", 40, 1.0, 1000, 50)
+        assert rare > common
+
+    def test_tech_boost_hyphenated(self):
+        # Hyphenated concept ID gets tech boost
+        tech = score_graph_term("retrieval-augmented-generation", "RAG", 2, 1.0, 100, 50)
+        plain = score_graph_term("rag", "rag", 2, 1.0, 100, 50)
+        assert tech > plain
+
+    def test_tech_boost_uppercase_label(self):
+        # Uppercase in label triggers tech boost
+        upper = score_graph_term("kg", "Knowledge Graph", 2, 1.0, 100, 50)
+        lower = score_graph_term("kg", "knowledge graph", 2, 1.0, 100, 50)
+        assert upper > lower
+
+    def test_compound_boost(self):
+        # 3-segment concept gets higher compound boost than single
+        compound = score_graph_term("a-b-c", "A B C", 2, 1.0, 100, 50)
+        single = score_graph_term("x", "X", 2, 1.0, 100, 50)
+        assert compound > single
+
+    def test_user_interest_match(self):
+        with_interest = score_graph_term("rag", "RAG", 2, 1.0, 100, 50,
+                                         user_interests={"rag"})
+        without = score_graph_term("rag", "RAG", 2, 1.0, 100, 50,
+                                   user_interests=set())
+        assert with_interest > without
+
+    def test_generic_penalty(self):
+        # Very common concept gets penalized
+        common = score_graph_term("x", "x", 50, 1.0, 100, 50)
+        rare = score_graph_term("x", "x", 2, 1.0, 100, 50)
+        assert rare > common
+
+    def test_hub_penalty(self):
+        # Concept near hub threshold gets penalized
+        near_hub = score_graph_term("x", "x", 45, 1.0, 100, 50)
+        far = score_graph_term("x", "x", 5, 1.0, 100, 50)
+        assert far > near_hub
+
+    def test_score_non_negative(self):
+        s = score_graph_term("x", "x", 100, 0.0, 100, 50)
+        assert s >= 0.0
+
+    def test_zero_docs(self):
+        s = score_graph_term("x", "x", 2, 1.0, 0, 50)
+        assert s > 0.0
+
+
+class TestLoadUserInterests:
+    def test_loads_from_kb_yml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = os.path.join(tmp, "config")
+            os.makedirs(cfg_dir)
+            with open(os.path.join(cfg_dir, "kb.yml"), "w") as f:
+                f.write("user_interests:\n  - rag\n  - graph-rag\n")
+            interests = load_user_interests(tmp)
+            assert interests == {"rag", "graph-rag"}
+
+    def test_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assert load_user_interests(tmp) == set()
+
+    def test_no_interests_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = os.path.join(tmp, "config")
+            os.makedirs(cfg_dir)
+            with open(os.path.join(cfg_dir, "kb.yml"), "w") as f:
+                f.write("records_dir: records\n")
+            assert load_user_interests(tmp) == set()
+
+
+class TestGetActiveGraphTermsScoring:
+    def test_scores_and_orders_by_score(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            init_graph_tables(conn)
+            # Add 10 docs so N=10, threshold = max(50, floor(0.002*10)) = 50
+            for i in range(10):
+                conn.execute(
+                    "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                    "VALUES (?, ?, '', 'web', '', '')",
+                    (f"d{i}", f"Doc {i}"),
+                )
+            conn.commit()
+            # Concept A: compound tech term, low df -> should score high
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('retrieval-augmented-generation', 'RAG', 3, 0, '2026-01-01')"
+            )
+            # Concept B: simple term, higher df -> should score lower
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('data', 'data', 5, 0, '2026-01-01')"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d0', 'retrieval-augmented-generation', 'primary', 0.9)"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d0', 'data', 'primary', 0.5)"
+            )
+            conn.commit()
+
+            terms = get_active_graph_terms(conn, "d0", max_terms=2)
+            assert len(terms) == 2
+            assert terms[0]["concept_id"] == "retrieval-augmented-generation"
+            assert terms[0]["score"] > terms[1]["score"]
+            conn.close()
+
+    def test_user_interests_affect_ranking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            init_graph_tables(conn)
+            for i in range(10):
+                conn.execute(
+                    "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                    "VALUES (?, ?, '', 'web', '', '')",
+                    (f"d{i}", f"Doc {i}"),
+                )
+            conn.commit()
+            # Two concepts with similar properties
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('concept-a', 'Concept A', 3, 0, '2026-01-01')"
+            )
+            conn.execute(
+                "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+                "VALUES ('concept-b', 'Concept B', 3, 0, '2026-01-01')"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d0', 'concept-a', 'primary', 0.5)"
+            )
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES ('d0', 'concept-b', 'primary', 0.5)"
+            )
+            conn.commit()
+
+            # Without user interests, they should be equal
+            terms = get_active_graph_terms(conn, "d0", user_interests=set())
+            assert terms[0]["score"] == terms[1]["score"]
+
+            # With user interest in concept-b, it should rank first
+            terms = get_active_graph_terms(
+                conn, "d0", user_interests={"concept-b"}
+            )
+            assert terms[0]["concept_id"] == "concept-b"
             conn.close()
