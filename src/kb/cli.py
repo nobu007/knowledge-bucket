@@ -277,6 +277,7 @@ def graph_cmd(subcommand: str):
     click.echo(f"Scored {report['importance_scored']} document(s) for importance")
 
     click.echo(f"Created {report['entity_edges']} document-entity edge(s)")
+    click.echo(f"Created {report['source_edges']} document-source edge(s)")
 
     # Also build document-document edges and concept co-occurrence edges
     db = index_path(root)

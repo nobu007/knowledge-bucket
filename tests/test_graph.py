@@ -22,7 +22,7 @@ from kb.index import index_path, init_db
 
 
 def _make_doc(root, doc_id, title, concepts=None, source_type="web",
-              source=None):
+              source=None, source_key=None):
     """Helper: create a minimal document under root/records/doc/."""
     from kb.core import DOC_DIR, RECORDS_DIR
 
@@ -32,6 +32,8 @@ def _make_doc(root, doc_id, title, concepts=None, source_type="web",
     fm = f"---\nid: {doc_id}\ntitle: {title}\nsource_type: {source_type}\n"
     if source:
         fm += f"source: {source}\n"
+    if source_key:
+        fm += f"source_key: \"{source_key}\"\n"
     if concepts:
         fm += "concepts:\n"
         for c in concepts:
@@ -718,3 +720,40 @@ class TestBuildGraphEntityEdges:
             report = build_graph(tmp)
             assert report["entities_found"] == 0
             assert report["entity_edges"] == 0
+
+
+class TestBuildGraphSourceEdges:
+    def test_creates_source_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "Web Article", ["rag"],
+                      source="https://example.com/article",
+                      source_key="url:https://example.com/article")
+            _make_doc(tmp, "doc2", "Another Article", ["kg"],
+                      source="https://example.com/other",
+                      source_key="url:https://example.com/other")
+            _make_doc(tmp, "doc3", "No Source", ["rag"])
+
+            report = build_graph(tmp)
+            assert report["source_edges"] == 2
+
+            db = index_path(tmp)
+            conn = sqlite3.connect(db)
+            edges = conn.execute(
+                "SELECT src_id, dst_id FROM edges WHERE edge_type = 'source' "
+                "ORDER BY src_id"
+            ).fetchall()
+            assert len(edges) == 2
+            assert edges[0] == ("doc1", "url:https://example.com/article")
+            assert edges[1] == ("doc2", "url:https://example.com/other")
+            conn.close()
+
+    def test_no_source_key_no_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "No Key", ["rag"])
+
+            report = build_graph(tmp)
+            assert report["source_edges"] == 0

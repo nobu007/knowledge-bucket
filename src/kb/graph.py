@@ -171,6 +171,7 @@ def _read_doc_info(filepath: str) -> dict | None:
         "entities": _extract_entities(meta),
         "source_type": str(meta.get("source_type", "web")),
         "has_source": bool(meta.get("source")),
+        "source_key": str(meta.get("source_key", "")) if meta.get("source_key") else "",
     }
 
 
@@ -192,6 +193,7 @@ def build_graph(root: str) -> dict:
     concepts_seen: dict[str, str] = {}
     entities_seen: dict[str, str] = {}  # entity_id -> label
     entity_edges = 0
+    source_edges = 0
     now = datetime.now(UTC).isoformat()
 
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
@@ -233,6 +235,16 @@ def build_graph(root: str) -> dict:
                 )
                 entity_edges += 1
 
+            src_key = info.get("source_key", "")
+            if src_key:
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(src_id, dst_id, edge_type, weight, updated_at) "
+                    "VALUES (?, ?, 'source', 1.0, ?)",
+                    (doc_id, src_key, now),
+                )
+                source_edges += 1
+
     for cid, label in concepts_seen.items():
         conn.execute(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
@@ -268,6 +280,7 @@ def build_graph(root: str) -> dict:
         "concepts_found": len(concepts_seen),
         "entities_found": len(entities_seen),
         "entity_edges": entity_edges,
+        "source_edges": source_edges,
         "importance_scored": scored,
     }
 
