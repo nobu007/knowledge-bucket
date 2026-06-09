@@ -118,6 +118,11 @@ def ingest_file(root: str, filepath: str) -> str | None:
                     r"^updated:.*$", f"updated: {now}", text,
                     count=1, flags=re.MULTILINE,
                 )
+                # Update content_hash in front matter (GOAL.md section 6)
+                updated_text = re.sub(
+                    r"^content_hash:.*$", f"content_hash: sha256:{content_hash}",
+                    updated_text, count=1, flags=re.MULTILINE,
+                )
                 # Replace body (everything after the second ---)
                 fm_end = updated_text.find("---\n", 4)
                 if fm_end >= 0:
@@ -141,6 +146,7 @@ def ingest_file(root: str, filepath: str) -> str | None:
 
     front_matter = f"---\nid: {ulid}\ntitle: {title}\nsource_type: {source_type}\n"
     front_matter += f"source_key: {source_key}\n"
+    front_matter += f"content_hash: sha256:{content_hash}\n"
     front_matter += f"created: {now}\nupdated: {now}\n"
     if source_url:
         front_matter += f"source: {source_url}\n"

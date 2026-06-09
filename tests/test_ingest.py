@@ -99,6 +99,53 @@ class TestIngestFile:
                 content = f.read()
             assert "source_key: url:" in content
 
+    def test_content_hash_in_front_matter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "note.txt")
+            with open(inbox_path, "w") as f:
+                f.write("Content about vector databases")
+
+            ulid = ingest_file(tmp, inbox_path)
+            assert ulid is not None
+
+            from kb.core import shard_path
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, shard_path(ulid))
+            with open(doc_path) as f:
+                content = f.read()
+            assert "content_hash: sha256:" in content
+
+    def test_content_hash_updated_on_change(self):
+        """content_hash in front matter is updated when content changes (section 18)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+
+            # First ingest
+            inbox_path = os.path.join(tmp, INBOX_DIR, "article.url")
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/a")
+            ulid1 = ingest_file(tmp, inbox_path)
+
+            from kb.core import shard_path
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, shard_path(ulid1))
+            with open(doc_path) as f:
+                text1 = f.read()
+            import re
+            hash1 = re.search(r"content_hash: (sha256:\w+)", text1)
+            assert hash1 is not None
+
+            # Second ingest with changed content
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/a\n\nNew body text")
+            ulid2 = ingest_file(tmp, inbox_path)
+            assert ulid2 == ulid1
+
+            with open(doc_path) as f:
+                text2 = f.read()
+            hash2 = re.search(r"content_hash: (sha256:\w+)", text2)
+            assert hash2 is not None
+            assert hash1.group(1) != hash2.group(1)  # hash changed
+
     def test_source_key_in_front_matter_memo(self):
         with tempfile.TemporaryDirectory() as tmp:
             ensure_dirs(tmp)
