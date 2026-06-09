@@ -18,6 +18,9 @@ dev = [
 export = [
     "pyarrow>=14.0",
 ]
+vector = [
+    "numpy>=1.24",
+]
 
 [project.scripts]
 kb = "kb.cli:main"

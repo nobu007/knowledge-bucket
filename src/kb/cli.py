@@ -30,6 +30,7 @@ from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
 from .related import build_doc_edges, find_related
 from .sync import sync
+from .vectors import build_vectors, semantic_search
 
 
 @click.group()
@@ -176,12 +177,40 @@ def index(rebuild: bool, do_sync: bool):
 @main.command()
 @click.argument("query")
 @click.option("--limit", "-n", default=20, help="Max results")
-def search(query: str, limit: int):
+@click.option("--semantic", is_flag=True, help="Use TF-IDF semantic search")
+def search(query: str, limit: int, semantic: bool):
     """Search documents using full-text search."""
     root = kb_root()
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
         raise SystemExit(1)
+
+    if semantic:
+        try:
+            results = semantic_search(root, query, limit)
+        except FileNotFoundError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
+
+        if not results:
+            click.echo("No results found.")
+            return
+
+        # Enrich with title from FTS index
+        db = index_path(root)
+        titles: dict[str, str] = {}
+        if os.path.exists(db):
+            conn = sqlite3.connect(db)
+            try:
+                for row in conn.execute("SELECT id, title FROM docs").fetchall():
+                    titles[row[0]] = row[1]
+            finally:
+                conn.close()
+
+        for r in results:
+            title = titles.get(r["id"], r["id"])
+            click.echo(f"[{r['id']}] {title} (score: {r['score']:.4f})")
+        return
 
     db = index_path(root)
     if not os.path.exists(db):
@@ -624,6 +653,23 @@ def health(as_json: bool):
 
     if report["concepts_missing_notes"] > 0:
         click.echo(f"Concepts missing notes (df>=2): {report['concepts_missing_notes']}")
+
+
+@main.command()
+def vectorize():
+    """Build TF-IDF vector index for semantic search."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    try:
+        report = build_vectors(root)
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Vectorized {report['docs_vectorized']} document(s)")
 
 
 @main.command()
