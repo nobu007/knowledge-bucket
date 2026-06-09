@@ -113,6 +113,7 @@ def ingest_file(root: str, filepath: str) -> str | None:
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
     front_matter = f"---\nid: {ulid}\ntitle: {title}\nsource_type: {source_type}\n"
+    front_matter += f"source_key: {source_key}\n"
     front_matter += f"created: {now}\nupdated: {now}\n"
     if source_url:
         front_matter += f"source: {source_url}\n"

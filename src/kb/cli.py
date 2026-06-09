@@ -23,6 +23,7 @@ from .core import (
     kb_root,
     shard_path,
 )
+from .dedup import generate_source_key
 from .export import export_parquet
 from .graph import build_graph
 from .health import compute_health
@@ -107,6 +108,7 @@ def add(title: str, source: str | None, content: str | None, doc_type: str,
 id: {ulid}
 title: {title}
 source_type: {doc_type}
+source_key: {generate_source_key(doc_type, source_url=source, title=title, doc_ulid=ulid)}
 created: {now}
 updated: {now}
 """
@@ -401,11 +403,18 @@ def add_paper(paper_ref: str, content: str | None):
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
+    paper_skey = generate_source_key(
+        paper_data["source_type"],
+        source_url=paper_data.get("source_url"),
+        title=paper_data["title"],
+        doc_ulid=ulid,
+    )
     front_matter = f"""\
 ---
 id: {ulid}
 title: {paper_data['title']}
 source_type: {paper_data['source_type']}
+source_key: {paper_skey}
 created: {now}
 updated: {now}
 """
@@ -468,11 +477,18 @@ def add_pdf(pdf_path: str, source: str | None, content: str | None):
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
+    pdf_skey = generate_source_key(
+        pdf_data["source_type"],
+        source_url=pdf_data.get("source_url"),
+        title=pdf_data["title"],
+        doc_ulid=ulid,
+    )
     front_matter = f"""\
 ---
 id: {ulid}
 title: {pdf_data['title']}
 source_type: {pdf_data['source_type']}
+source_key: {pdf_skey}
 created: {now}
 updated: {now}
 """
@@ -524,11 +540,17 @@ def add_repo(url: str):
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
+    repo_skey = generate_source_key(
+        repo_data["source_type"],
+        source_url=repo_data.get("source_url"),
+        doc_ulid=ulid,
+    )
     front_matter = f"""\
 ---
 id: {ulid}
 title: {repo_data['title']}
 source_type: {repo_data['source_type']}
+source_key: {repo_skey}
 created: {now}
 updated: {now}
 source: {repo_data['source_url']}

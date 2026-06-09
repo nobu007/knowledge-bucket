@@ -83,6 +83,38 @@ class TestIngestFile:
                 content = f.read()
             assert "source: https://example.com/article" in content
 
+    def test_source_key_in_front_matter_web(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "article.url")
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/article")
+
+            ulid = ingest_file(tmp, inbox_path)
+            assert ulid is not None
+
+            from kb.core import shard_path
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, shard_path(ulid))
+            with open(doc_path) as f:
+                content = f.read()
+            assert "source_key: url:" in content
+
+    def test_source_key_in_front_matter_memo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "note.txt")
+            with open(inbox_path, "w") as f:
+                f.write("This is a test memo")
+
+            ulid = ingest_file(tmp, inbox_path)
+            assert ulid is not None
+
+            from kb.core import shard_path
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, shard_path(ulid))
+            with open(doc_path) as f:
+                content = f.read()
+            assert "source_key: memo:" in content
+
     def test_skips_unsupported_ext(self):
         with tempfile.TemporaryDirectory() as tmp:
             ensure_dirs(tmp)

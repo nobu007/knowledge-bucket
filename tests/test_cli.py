@@ -1,7 +1,9 @@
 """Tests for CLI: kb init, kb add, kb show, kb concept."""
 
 import os
+from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from kb.cli import main
@@ -68,6 +70,44 @@ class TestAdd:
                 "add", "--title", "Stdin Test",
             ], input="Content from stdin\n")
             assert result.exit_code == 0
+
+    def test_add_source_key_in_front_matter(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            result = runner.invoke(main, [
+                "add", "--title", "Test", "--source", "https://example.com",
+                "--content", "Hello world",
+            ])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    with open(os.path.join(root, fn)) as f:
+                        content = f.read()
+                    assert "source_key: url:" in content
+                    return
+            pytest.fail("No document file found")
+
+    def test_add_memo_source_key(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            result = runner.invoke(main, [
+                "add", "--title", "My Memo", "--type", "memo",
+                "--content", "Some notes",
+            ])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    with open(os.path.join(root, fn)) as f:
+                        content = f.read()
+                    assert "source_key: memo:" in content
+                    return
+            pytest.fail("No document file found")
 
 
 class TestShow:
@@ -247,3 +287,84 @@ class TestConcept:
             result = runner.invoke(main, ["concept", "rust"])
             assert result.exit_code == 0
             assert "Co-occurring concepts" in result.output
+
+
+class TestAddPaperSourceKey:
+    @patch("kb.parsers.paper.parse_paper")
+    def test_source_key_in_front_matter(self, mock_parse):
+        mock_parse.return_value = {
+            "title": "Test Paper",
+            "source_type": "paper",
+            "source_url": "https://arxiv.org/abs/2301.12345",
+            "body": "Abstract text",
+            "metadata": {"authors": ["Alice"], "arxiv_id": "2301.12345"},
+        }
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            result = runner.invoke(main, ["add-paper", "2301.12345"])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    with open(os.path.join(root, fn)) as f:
+                        content = f.read()
+                    assert "source_key: arxiv:" in content
+                    return
+            pytest.fail("No document file found")
+
+
+class TestAddPdfSourceKey:
+    @patch("kb.parsers.pdf.parse_pdf")
+    def test_source_key_in_front_matter(self, mock_parse):
+        mock_parse.return_value = {
+            "title": "Test PDF",
+            "source_type": "pdf",
+            "source_url": "https://s3.example.com/doc.pdf",
+            "body": "Extracted text",
+            "metadata": {"page_count": 5, "author": "Bob"},
+        }
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            # Create a dummy PDF file
+            with open("test.pdf", "w") as f:
+                f.write("fake pdf")
+            result = runner.invoke(main, ["add-pdf", "test.pdf"])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    with open(os.path.join(root, fn)) as f:
+                        content = f.read()
+                    assert "source_key: url:" in content
+                    return
+            pytest.fail("No document file found")
+
+
+class TestAddRepoSourceKey:
+    @patch("kb.parsers.repo.parse_repo")
+    def test_source_key_in_front_matter(self, mock_parse):
+        mock_parse.return_value = {
+            "title": "user/repo",
+            "source_type": "git_repo",
+            "source_url": "https://github.com/user/repo",
+            "body": "# README\nHello",
+            "metadata": {"language": "Python", "stars": 42, "topics": []},
+        }
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            result = runner.invoke(main, ["add-repo", "https://github.com/user/repo"])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    with open(os.path.join(root, fn)) as f:
+                        content = f.read()
+                    assert "source_key: repo:" in content
+                    return
+            pytest.fail("No document file found")
