@@ -101,6 +101,22 @@ def _extract_concepts(meta: dict) -> list[str]:
         return []
     if isinstance(raw, str):
         return [c.strip() for c in raw.split(",") if c.strip()]
+    if isinstance(raw, dict):
+        result = []
+        for key in ("primary", "candidates"):
+            items = raw.get(key, [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, str):
+                    result.append(item.strip())
+                elif isinstance(item, dict):
+                    cid = item.get("id", "")
+                    if cid.startswith("concept:"):
+                        cid = cid[len("concept:"):]
+                    if cid:
+                        result.append(cid.strip())
+        return result
     if isinstance(raw, list):
         result = []
         for item in raw:
@@ -116,6 +132,29 @@ def _extract_concepts(meta: dict) -> list[str]:
     return []
 
 
+def _extract_entities(meta: dict) -> list[dict]:
+    """Extract entity list from front matter concepts.entities (GOAL.md section 6).
+
+    Returns list of dicts with 'entity_id' and 'label' keys.
+    """
+    raw = meta.get("concepts")
+    if not isinstance(raw, dict):
+        return []
+    entities_raw = raw.get("entities", [])
+    if not isinstance(entities_raw, list):
+        return []
+    result = []
+    for item in entities_raw:
+        if isinstance(item, dict):
+            eid = item.get("id", "")
+            label = item.get("label", eid)
+            if eid:
+                result.append({"entity_id": eid, "label": label})
+        elif isinstance(item, str):
+            result.append({"entity_id": item, "label": item})
+    return result
+
+
 def _read_doc_info(filepath: str) -> dict | None:
     try:
         with open(filepath) as f:
@@ -129,6 +168,7 @@ def _read_doc_info(filepath: str) -> dict | None:
     return {
         "doc_id": str(doc_id),
         "concepts": _extract_concepts(meta),
+        "entities": _extract_entities(meta),
         "source_type": str(meta.get("source_type", "web")),
         "has_source": bool(meta.get("source")),
     }
@@ -150,6 +190,8 @@ def build_graph(root: str) -> dict:
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     docs_processed = 0
     concepts_seen: dict[str, str] = {}
+    entities_seen: dict[str, str] = {}  # entity_id -> label
+    entity_edges = 0
     now = datetime.now(UTC).isoformat()
 
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
@@ -180,12 +222,32 @@ def build_graph(root: str) -> dict:
                     (doc_id, concept_id),
                 )
 
+            for ent in info["entities"]:
+                eid = ent["entity_id"]
+                entities_seen[eid] = ent["label"]
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(src_id, dst_id, edge_type, weight, updated_at) "
+                    "VALUES (?, ?, 'entity', 1.0, ?)",
+                    (doc_id, eid, now),
+                )
+                entity_edges += 1
+
     for cid, label in concepts_seen.items():
         conn.execute(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
             "VALUES (?, ?, 'concept', 0, 0, ?) "
             "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
             (cid, label, now),
+        )
+
+    # Insert entities into concepts table with kind='entity'
+    for eid, label in entities_seen.items():
+        conn.execute(
+            "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
+            "VALUES (?, ?, 'entity', 0, 0, ?) "
+            "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
+            (eid, label, now),
         )
 
     # Mark stop concepts in DB
@@ -204,6 +266,8 @@ def build_graph(root: str) -> dict:
     return {
         "docs_processed": docs_processed,
         "concepts_found": len(concepts_seen),
+        "entities_found": len(entities_seen),
+        "entity_edges": entity_edges,
         "importance_scored": scored,
     }
 

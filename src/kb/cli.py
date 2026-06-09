@@ -273,7 +273,10 @@ def graph_cmd(subcommand: str):
     report = build_graph(root)
     click.echo(f"Processed {report['docs_processed']} document(s)")
     click.echo(f"Found {report['concepts_found']} unique concept(s)")
+    click.echo(f"Found {report['entities_found']} unique entit(ies)")
     click.echo(f"Scored {report['importance_scored']} document(s) for importance")
+
+    click.echo(f"Created {report['entity_edges']} document-entity edge(s)")
 
     # Also build document-document edges and concept co-occurrence edges
     db = index_path(root)

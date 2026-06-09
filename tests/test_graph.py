@@ -590,3 +590,131 @@ class TestGetActiveGraphTermsScoring:
             )
             assert terms[0]["concept_id"] == "concept-b"
             conn.close()
+
+
+class TestExtractEntities:
+    def test_extracts_dict_entities(self):
+        from kb.graph import _extract_entities
+
+        meta = {
+            "concepts": {
+                "primary": [{"id": "concept:rag", "label": "RAG", "weight": 1.0}],
+                "entities": [
+                    {"id": "openai", "label": "OpenAI"},
+                    {"id": "google", "label": "Google"},
+                ],
+            }
+        }
+        ents = _extract_entities(meta)
+        assert len(ents) == 2
+        assert ents[0]["entity_id"] == "openai"
+        assert ents[0]["label"] == "OpenAI"
+
+    def test_string_entities(self):
+        from kb.graph import _extract_entities
+
+        meta = {"concepts": {"entities": ["openai", "google"]}}
+        ents = _extract_entities(meta)
+        assert len(ents) == 2
+        assert ents[0]["entity_id"] == "openai"
+
+    def test_no_entities_key(self):
+        from kb.graph import _extract_entities
+
+        meta = {"concepts": {"primary": []}}
+        assert _extract_entities(meta) == []
+
+    def test_non_dict_concepts(self):
+        from kb.graph import _extract_entities
+
+        assert _extract_entities({"concepts": ["rag"]}) == []
+        assert _extract_entities({}) == []
+
+    def test_empty_id_skipped(self):
+        from kb.graph import _extract_entities
+
+        meta = {"concepts": {"entities": [{"id": "", "label": "Empty"}]}}
+        assert _extract_entities(meta) == []
+
+
+def _make_doc_with_entities(root, doc_id, title, concepts_dict=None):
+    """Create a doc with dict-format concepts including entities."""
+    from kb.core import DOC_DIR, RECORDS_DIR
+
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, "ab", "cd")
+    os.makedirs(doc_dir, exist_ok=True)
+    path = os.path.join(doc_dir, f"{doc_id}.md")
+    fm = f"---\nid: {doc_id}\ntitle: {title}\nsource_type: web\n"
+    if concepts_dict is not None:
+        import yaml
+        fm += f"concepts:\n"
+        for key, items in concepts_dict.items():
+            fm += f"  {key}:\n"
+            for item in items:
+                fm += f"    - {yaml.dump(item, default_flow_style=True).strip()}\n"
+    fm += "---\n\nBody.\n"
+    with open(path, "w") as f:
+        f.write(fm)
+    return path
+
+
+class TestBuildGraphEntityEdges:
+    def test_creates_entity_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc_with_entities(
+                tmp,
+                "doc1",
+                "Doc One",
+                {
+                    "primary": [{"id": "concept:rag", "label": "RAG", "weight": 1.0}],
+                    "entities": [
+                        {"id": "openai", "label": "OpenAI"},
+                    ],
+                },
+            )
+            _make_doc_with_entities(
+                tmp,
+                "doc2",
+                "Doc Two",
+                {
+                    "primary": [{"id": "concept:kg", "label": "KG", "weight": 1.0}],
+                    "entities": [
+                        {"id": "openai", "label": "OpenAI"},
+                        {"id": "google", "label": "Google"},
+                    ],
+                },
+            )
+
+            report = build_graph(tmp)
+            assert report["docs_processed"] == 2
+            assert report["entities_found"] == 2  # openai, google
+            assert report["entity_edges"] == 3  # doc1->openai, doc2->openai, doc2->google
+
+            db = index_path(tmp)
+            conn = sqlite3.connect(db)
+            # Entity edges in DB
+            entity_edges = conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE edge_type = 'entity'"
+            ).fetchone()[0]
+            assert entity_edges == 3
+
+            # Entities stored in concepts table
+            openai = conn.execute(
+                "SELECT label, kind FROM concepts WHERE concept_id = 'openai'"
+            ).fetchone()
+            assert openai is not None
+            assert openai[0] == "OpenAI"
+            assert openai[1] == "entity"
+            conn.close()
+
+    def test_no_entities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "No Entities", ["rag"])
+
+            report = build_graph(tmp)
+            assert report["entities_found"] == 0
+            assert report["entity_edges"] == 0

@@ -143,21 +143,26 @@ def parse_analysis_response(json_str: str) -> AnalysisResult:
 
 def build_front_matter_update(analysis: AnalysisResult, ulid: str,
                               source_type: str) -> dict:
+    concepts_dict: dict = {
+        "primary": [
+            {"id": f"concept:{c.id}", "label": c.label, "weight": 1.0}
+            for c in analysis.primary_concepts
+        ],
+        "candidates": [
+            {"id": f"concept:{c.id}", "label": c.label, "weight": 0.5}
+            for c in analysis.candidate_concepts
+        ],
+    }
+    if analysis.entities:
+        concepts_dict["entities"] = [
+            {"id": e.id, "label": e.label} for e in analysis.entities
+        ]
     return {
         "analysis": {
             "analyzer_version": "analyzer_v1",
             "confidence": analysis.confidence,
             "importance": analysis.importance,
         },
-        "concepts": {
-            "primary": [
-                {"id": f"concept:{c.id}", "label": c.label, "weight": 1.0}
-                for c in analysis.primary_concepts
-            ],
-            "candidates": [
-                {"id": f"concept:{c.id}", "label": c.label, "weight": 0.5}
-                for c in analysis.candidate_concepts
-            ],
-        },
+        "concepts": concepts_dict,
         "tags_display": analysis.display_tags,
     }
