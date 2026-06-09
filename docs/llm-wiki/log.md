@@ -173,3 +173,19 @@ Append durable decisions and completed goal progress here.
   - Export writes one `.parquet` file per table; column types inferred by pyarrow
   - Default output to `.kb/exports/` (regeneratable cache, not committed to Git)
 - **Phase 5 status**: graph health dashboard + Parquet export complete. Remaining: vector index, S3/R2 raw storage, shard repo, batch reanalysis
+
+## 2026-06-09: Phase 5 — TF-IDF vector index for semantic search
+
+- **Commit**: `fa1e76c` feat(kb): add TF-IDF vector index for semantic search (Phase 5)
+- **What**:
+  - `src/kb/vectors.py`: hash-based fixed-dimension (4096) TF-IDF vectors with L2 normalization and cosine similarity search
+  - `kb vectorize` CLI command to build vector index from FTS-indexed documents
+  - `kb search --semantic` flag for semantic search mode (enriched with titles from FTS index)
+  - `numpy>=1.24` added as optional `[vector]` dependency
+  - 12 new tests, 220 total pass, lint clean
+- **Decisions**:
+  - Hash-based vectorization (MD5 of token → bucket index) avoids vocabulary management and keeps fixed-size vectors
+  - Smoothed IDF formula `log(1 + N/(df+1))` prevents zero-IDF with few documents
+  - numpy is optional dependency — vectorize and semantic search give clear error without it
+  - Vectors stored as `.npz` in `.kb/` (regeneratable cache, gitignored)
+- **Phase 5 status**: graph health dashboard + Parquet export + vector index complete. Remaining: S3/R2 raw storage, shard repo, batch reanalysis
