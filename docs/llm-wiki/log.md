@@ -159,3 +159,17 @@ Append durable decisions and completed goal progress here.
   - Concepts missing notes counted only for df>=2 (same threshold as active graph terms)
   - Connectivity ratio = fraction of docs that have at least one edge
 - **Phase 5 status**: graph health dashboard complete. Remaining: vector index, Parquet export, S3/R2 raw storage, shard repo, batch reanalysis
+
+## 2026-06-09: Phase 5 — Parquet export
+
+- **Commit**: `138ad03` feat(kb): add Parquet export command for external analysis (Phase 5)
+- **What**:
+  - `src/kb/export.py`: exports all 5 graph tables (documents, concepts, doc_concepts, edges, doc_stats) from SQLite to Parquet files using pyarrow
+  - `kb export [-o DIR]` CLI command; default output `.kb/exports/`
+  - `pyarrow>=14.0` added as optional `[export]` dependency
+  - 6 new tests, 208 total pass, lint clean
+- **Decisions**:
+  - pyarrow is optional dependency (not all users need Parquet export)
+  - Export writes one `.parquet` file per table; column types inferred by pyarrow
+  - Default output to `.kb/exports/` (regeneratable cache, not committed to Git)
+- **Phase 5 status**: graph health dashboard + Parquet export complete. Remaining: vector index, S3/R2 raw storage, shard repo, batch reanalysis
