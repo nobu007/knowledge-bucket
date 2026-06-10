@@ -4,3 +4,6 @@ docs/MEMO.txt
 
 # === regeneratable index cache ===
 .kb/
+
+# === Python test artifacts ===
+.coverage
