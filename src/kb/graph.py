@@ -67,6 +67,21 @@ def load_stop_concepts(root: str) -> set[str]:
     return set(data.get("stop_concepts", [])) if data else set()
 
 
+def load_taxonomy(root: str) -> dict[str, dict]:
+    """Load virtual collections from config/taxonomy.yml (GOAL.md section 19).
+
+    Returns dict mapping collection name -> {label, include_concepts, include_types}.
+    """
+    path = os.path.join(root, CONFIG_DIR, "taxonomy.yml")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if not data:
+        return {}
+    return data.get("virtual_collections", {}) or {}
+
+
 def load_user_interests(root: str) -> set[str]:
     path = os.path.join(root, CONFIG_DIR, "kb.yml")
     if not os.path.exists(path):
@@ -459,3 +474,63 @@ def compute_importance(conn: sqlite3.Connection) -> int:
 
     conn.commit()
     return scored
+
+
+def resolve_virtual_collection(conn: sqlite3.Connection,
+                               collection_def: dict) -> list[dict]:
+    """Resolve a virtual collection definition to matching documents.
+
+    Supports include_concepts (concept IDs) and include_types (source types).
+    If both are specified, documents matching either criterion are included.
+    Returns list of dicts with id, title, source, importance.
+    """
+    init_graph_tables(conn)
+    include_concepts = collection_def.get("include_concepts", []) or []
+    include_types = collection_def.get("include_types", []) or []
+
+    # Strip concept: prefix if present
+    concept_ids = []
+    for c in include_concepts:
+        cid = c if isinstance(c, str) else c.get("id", "")
+        if cid.startswith("concept:"):
+            cid = cid[len("concept:"):]
+        if cid:
+            concept_ids.append(cid)
+
+    doc_ids: set[str] = set()
+
+    if concept_ids:
+        placeholders = ",".join("?" * len(concept_ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT dc.doc_id FROM doc_concepts dc "
+            f"WHERE dc.concept_id IN ({placeholders})",
+            concept_ids,
+        ).fetchall()
+        doc_ids.update(r[0] for r in rows)
+
+    if include_types:
+        placeholders = ",".join("?" * len(include_types))
+        rows = conn.execute(
+            f"SELECT doc_id FROM doc_stats "
+            f"WHERE source_type IN ({placeholders})",
+            include_types,
+        ).fetchall()
+        doc_ids.update(r[0] for r in rows)
+
+    if not doc_ids:
+        return []
+
+    doc_list = sorted(doc_ids)
+    placeholders = ",".join("?" * len(doc_list))
+    rows = conn.execute(
+        f"SELECT d.id, d.title, d.source, COALESCE(ds.importance, 0.0) "
+        f"FROM docs d "
+        f"LEFT JOIN doc_stats ds ON ds.doc_id = d.id "
+        f"WHERE d.id IN ({placeholders}) "
+        f"ORDER BY COALESCE(ds.importance, 0.0) DESC, d.title ASC",
+        doc_list,
+    ).fetchall()
+    return [
+        {"id": r[0], "title": r[1], "source": r[2], "importance": r[3]}
+        for r in rows
+    ]

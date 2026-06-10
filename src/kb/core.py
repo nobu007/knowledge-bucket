@@ -50,6 +50,27 @@ stop_concepts:
   - javascript
 """
 
+DEFAULT_TAXONOMY = """\
+# Virtual collections: concept-based and source-type-based views (GOAL.md section 19).
+# These are SQL views, not physical folders.
+virtual_collections:
+  papers:
+    label: Papers
+    include_types:
+      - paper
+
+  github_repos:
+    label: GitHub Repos
+    include_types:
+      - git_repo
+      - repo
+
+  pdfs:
+    label: PDFs
+    include_types:
+      - pdf
+"""
+
 
 _last_ulid_ms: int = 0
 _last_ulid_rand: int = 0

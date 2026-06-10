@@ -16,6 +16,7 @@ from .core import (
     DEFAULT_ALIASES,
     DEFAULT_CONFIG,
     DEFAULT_STOP_CONCEPTS,
+    DEFAULT_TAXONOMY,
     DOC_DIR,
     RECORDS_DIR,
     ensure_dirs,
@@ -25,7 +26,7 @@ from .core import (
 )
 from .dedup import generate_source_key
 from .export import export_parquet
-from .graph import build_graph
+from .graph import build_graph, load_taxonomy, resolve_virtual_collection
 from .health import compute_health
 from .index import build_index, index_path, search_index, sync_index
 from .ingest import ingest_inbox
@@ -64,6 +65,11 @@ def init(path: str):
     if not os.path.exists(stop_path):
         with open(stop_path, "w") as f:
             f.write(DEFAULT_STOP_CONCEPTS)
+
+    taxonomy_path = os.path.join(target, CONFIG_DIR, "taxonomy.yml")
+    if not os.path.exists(taxonomy_path):
+        with open(taxonomy_path, "w") as f:
+            f.write(DEFAULT_TAXONOMY)
 
     # Ensure .gitkeep in inbox so git tracks the empty dir
     gitkeep = os.path.join(target, "inbox", ".gitkeep")
@@ -716,6 +722,34 @@ def concept_cmd(concept_id: str):
         click.echo()
         click.echo("--- Concept Note ---")
         click.echo(note)
+
+
+@main.command()
+def collections():
+    """List virtual collections defined in config/taxonomy.yml."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    taxonomy = load_taxonomy(root)
+    if not taxonomy:
+        click.echo("No virtual collections defined. Edit config/taxonomy.yml.")
+        return
+
+    db = index_path(root)
+    if not os.path.exists(db):
+        click.echo("No index found. Run 'kb graph build' first.", err=True)
+        raise SystemExit(1)
+
+    conn = sqlite3.connect(db)
+    try:
+        for name, cdef in taxonomy.items():
+            docs = resolve_virtual_collection(conn, cdef)
+            label = cdef.get("label", name)
+            click.echo(f"  {name} ({label}): {len(docs)} document(s)")
+    finally:
+        conn.close()
 
 
 @main.command()

@@ -6,7 +6,12 @@ import sqlite3
 from flask import Flask, abort, render_template_string, request
 
 from .core import DOC_DIR, RECORDS_DIR
-from .graph import _parse_front_matter_yaml, init_graph_tables
+from .graph import (
+    _parse_front_matter_yaml,
+    init_graph_tables,
+    load_taxonomy,
+    resolve_virtual_collection,
+)
 from .health import compute_health
 from .index import index_path, search_index
 from .related import find_cooccurring_concepts, find_related
@@ -337,6 +342,48 @@ def create_app(kb_root: str) -> Flask:
             cooc=cooc,
         )
 
+    @app.route("/collections")
+    def collections_page():
+        taxonomy = load_taxonomy(kb_root)
+        db = index_path(kb_root)
+        collections = []
+        if taxonomy and os.path.exists(db):
+            conn = sqlite3.connect(db)
+            try:
+                init_graph_tables(conn)
+                for name, cdef in taxonomy.items():
+                    docs = resolve_virtual_collection(conn, cdef)
+                    collections.append({
+                        "name": name,
+                        "label": cdef.get("label", name),
+                        "count": len(docs),
+                    })
+            finally:
+                conn.close()
+        return render_template_string(
+            _COLLECTIONS_HTML, collections=collections,
+        )
+
+    @app.route("/collections/<name>")
+    def collection_detail(name: str):
+        taxonomy = load_taxonomy(kb_root)
+        cdef = taxonomy.get(name)
+        if not cdef:
+            abort(404)
+        db = index_path(kb_root)
+        docs = []
+        if os.path.exists(db):
+            conn = sqlite3.connect(db)
+            try:
+                init_graph_tables(conn)
+                docs = resolve_virtual_collection(conn, cdef)
+            finally:
+                conn.close()
+        return render_template_string(
+            _COLLECTION_DETAIL_HTML,
+            name=name, label=cdef.get("label", name), docs=docs,
+        )
+
     return app
 
 
@@ -379,7 +426,8 @@ input[type=text] {
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 <form method="get">
   <input type="text" name="q" value="{{ query }}"
@@ -466,7 +514,8 @@ h2 {
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 <a class="back" href="/">&larr; Search</a>
 <h1>{{ meta.get('title', doc_id) }}</h1>
@@ -530,7 +579,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 {% if not docs %}
 <p class="empty">No documents yet. Use <code>kb add</code> to add documents.</p>
@@ -582,7 +632,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 {% if not categories %}
 <p class="empty">No categories yet. Run <code>kb graph build</code> first.</p>
@@ -628,7 +679,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 <a class="back" href="/categories">&larr; All categories</a>
 <h1>{{ source_type }}</h1>
@@ -684,7 +736,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 <div id="graph"></div>
 <div class="tooltip" id="tooltip"></div>
@@ -794,7 +847,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 {% if not concepts %}
 <p class="empty">No concepts yet. Run <code>kb graph build</code> first.</p>
@@ -851,7 +905,8 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 <a class="back" href="/concepts">&larr; All concepts</a>
 <h1>{{ concept_label }}</h1>
@@ -877,6 +932,109 @@ nav a { color: #2563eb; text-decoration: none; }
 {% endfor %}
 </div>
 {% endif %}
+</body>
+</html>
+"""
+
+_COLLECTIONS_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collections - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 800px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a;
+}
+h1 { margin-bottom: 1rem; font-size: 1.5rem; }
+nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
+nav a { color: #2563eb; text-decoration: none; }
+.col-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.75rem 0; border-bottom: 1px solid #eee;
+}
+.col-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
+.col-item .count { color: #666; font-size: 0.85rem; }
+.empty { color: #888; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Virtual Collections</h1>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
+</nav>
+{% if not collections %}
+<p class="empty">No virtual collections defined.
+Edit <code>config/taxonomy.yml</code> to add collections.</p>
+{% endif %}
+{% for c in collections %}
+<div class="col-item">
+  <a href="/collections/{{ c.name }}">{{ c.label }}</a>
+  <span class="count">{{ c.count }} document{{ 's' if c.count != 1 else '' }}</span>
+</div>
+{% endfor %}
+</body>
+</html>
+"""
+
+_COLLECTION_DETAIL_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ label }} - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 800px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a;
+}
+h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+nav { margin-bottom: 1rem; font-size: 0.9rem; }
+nav a { color: #2563eb; text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
+.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
+.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
+.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
+.empty { color: #888; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
+</nav>
+<a class="back" href="/collections">&larr; All collections</a>
+<h1>{{ label }}</h1>
+{% if not docs %}
+<p class="empty">No documents in this collection.</p>
+{% endif %}
+{% for d in docs %}
+<div class="doc-item">
+  <a href="/doc/{{ d.id }}">{{ d.title or d.id }}</a>
+  <div class="meta">
+    {% if d.source %}<span>{{ d.source }}</span>{% endif %}
+    <span>importance: {{ "%.2f"|format(d.importance) }}</span>
+  </div>
+</div>
+{% endfor %}
 </body>
 </html>
 """
@@ -942,7 +1100,8 @@ h2 {
   <a href="/categories">Categories</a> &middot;
   <a href="/concepts">Concepts</a> &middot;
   <a href="/graph">Graph</a> &middot;
-  <a href="/health">Health</a>
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
 </nav>
 {% if report.get('error') %}
 <p class="error">{{ report.error }}</p>
