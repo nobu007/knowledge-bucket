@@ -7,8 +7,8 @@
 
 ## 現在の状況
 
-Phase 1〜5の基本実装は完了。348テスト合格、lint clean。
-現在は Phase 6（運用品質向上）を進行中。
+Phase 1〜7完了。445テスト合格、lint clean。
+Phase 8は文書数30万件/repo 5GBまで着手しない。
 
 ---
 
@@ -26,17 +26,17 @@ Phase 1〜5の基本実装は完了。348テスト合格、lint clean。
 
 ### 6.2 大量インポート最適化
 
-- [ ] `ingest.py` のバッチモード: inbox内100件以上のファイルを一括処理時のSQLiteトランザクション最適化
-- [ ] `graph.py` のバッチグラフ構築: 1000件以上の新規文書を一括でグラフ構築するバッチモード
-- [ ] `index.py` のbulk insert: FTS5へのINSERTをトランザクション内でバッチ化
+- [x] `ingest.py` のバッチモード: inbox内100件以上のファイルを一括処理時のSQLiteトランザクション最適化
+- [x] `graph.py` のバッチグラフ構築: 1000件以上の新規文書を一括でグラフ構築するバッチモード
+- [x] `index.py` のbulk insert: FTS5へのINSERTをトランザクション内でバッチ化
 
 **完了基準**: 1000件のダミー文書でのベンチマーク。現状より2倍以上高速化。
 
 ### 6.3 インデックスリカバリ
 
-- [ ] `kb index --verify` コマンド: FTSインデックスと実際のMarkdownファイルの整合性チェック
-- [ ] `kb index --repair` コマンド: 欠損エントリの再構築、ゴミエントリの削除
-- [ ] `kv_meta` の `last_indexed_commit` が存在しないコミットを指している場合の自動検出と full rebuild フォールバック
+- [x] `kb index --verify` コマンド: FTSインデックスと実際のMarkdownファイルの整合性チェック
+- [x] `kb index --repair` コマンド: 欠損エントリの再構築、ゴミエントリの削除
+- [x] `kv_meta` の `last_indexed_commit` が存在しないコミットを指している場合の自動検出と full rebuild フォールバック
 
 **完了基準**: 意図的にインデックスを破損させて `--verify` で検出、`--repair` で修復できること。
 
@@ -46,19 +46,19 @@ Phase 1〜5の基本実装は完了。348テスト合格、lint clean。
 
 ### 7.1 動画入力対応
 
-- [ ] `parsers/video.py`: YouTube URLからメタデータ（タイトル、概要、チャンネル、長さ）を取得
-- [ ] `kb add-video <url>` CLIコマンド
-- [ ] 新しい `source_type: video` の追加
-- [ ] `prompts/analyzer_video.md` の作成
+- [x] `parsers/video.py`: YouTube URLからメタデータ（タイトル、概要、チャンネル、長さ）を取得
+- [x] `kb add-video <url>` CLIコマンド
+- [x] 新しい `source_type: video` の追加
+- [x] `prompts/analyzer_video.md` の作成
 
 **完了基準**: YouTube URLを渡してレコードが生成されること。テストはAPIをモック化。
 
 ### 7.2 Embedding-based vector search
 
-- [ ] `src/kb/embeddings.py`: OpenAI / ローカルモデルのembedding生成インターフェース
-- [ ] `kb vectorize --engine embedding` でembeddingベースのベクトルインデックス構築
-- [ ] `kb search --semantic` でembedding vectorを使った検索（TF-IDFフォールバック付き）
-- [ ] embeddingの保存先: `.kb/embeddings.npz`
+- [x] `src/kb/embeddings.py`: OpenAI / ローカルモデルのembedding生成インターフェース
+- [x] `kb vectorize --engine embedding` でembeddingベースのベクトルインデックス構築
+- [x] `kb search --semantic` でembedding vectorを使った検索（TF-IDFフォールバック付き）
+- [x] embeddingの保存先: `.kb/embeddings.npz`
 
 **完了基準**: embeddingベースのセマンティック検索がTF-IDFより高い関連性を示すこと（手動確認）。
 

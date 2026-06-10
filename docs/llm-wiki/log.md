@@ -301,3 +301,14 @@ Append durable decisions and completed goal progress here.
   - Only "locked" errors are retried; other OperationalErrors (e.g. "no such table") propagate immediately
   - 3 retries with exponential backoff balances responsiveness (max ~350ms wait) against contention window
 - **Phase 6.1 status**: ALL COMPLETE. Paper/repo/PDF error handling, broken front matter skip, SQLite lock retry all done with error-path tests
+
+## 2026-06-11: All phases through 7 complete — goal DONE
+
+- **What**: Verified all Phase 6.2, 6.3, 7.1, 7.2 checkboxes were implemented in prior cycles but GOAL.md was not updated to reflect completion. Updated GOAL.md to mark all items `[x]`.
+- **Verification**: 445 tests pass, lint clean. All code for batch optimization (6.2), index recovery (6.3), video input (7.1), and embedding search (7.2) confirmed present and tested.
+- **Phase 6.2 status**: COMPLETE. `ingest_inbox` shared connection, `build_index`/`sync_index` use `executemany` with single commit, `build_graph` uses `executemany` for batch inserts. Bulk test suite exists.
+- **Phase 6.3 status**: COMPLETE. `verify_index`/`repair_index` with ghost detection, missing file indexing, stale HEAD detection. CLI `--verify`/`--repair` wired. Comprehensive test suite.
+- **Phase 7.1 status**: COMPLETE. `parsers/video.py` with YouTube metadata, `kb add-video` CLI, `source_type: video`, `prompts/analyzer_video.md`.
+- **Phase 7.2 status**: COMPLETE. `src/kb/embeddings.py` with OpenAI + local engines, `kb vectorize --engine`, `kb search --semantic` with TF-IDF fallback, `.kb/embeddings.npz` storage.
+- **Phase 8**: DEFERRED until 300k+ docs or 5GB+ repo size per GOAL.md.
+- **GOAL STATUS**: ALL IMPLEMENTABLE PHASES COMPLETE.
