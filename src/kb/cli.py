@@ -32,6 +32,7 @@ from .health import compute_health
 from .index import build_index, index_path, repair_index, search_index, sync_index, verify_index
 from .ingest import ingest_inbox
 from .related import build_concept_edges, build_doc_edges, find_cooccurring_concepts, find_related
+from .storage import get_raw, save_raw
 from .sync import sync
 from .vectors import build_vectors, semantic_search
 
@@ -87,8 +88,10 @@ def init(path: str):
 @click.option("--content", "-c", default=None, help="Content text (or pipe via stdin)")
 @click.option("--type", "doc_type", default="web", help="Source type: web|paper|repo|memo|pdf")
 @click.option("--concepts", default=None, help="Comma-separated concept slugs")
+@click.option("--save-raw", "do_save_raw", is_flag=True,
+              help="Save raw content to S3/R2 and record raw_ref in front matter")
 def add(title: str, source: str | None, content: str | None, doc_type: str,
-        concepts: str | None):
+        concepts: str | None, do_save_raw: bool):
     """Add a new document to the knowledge bucket."""
     root = kb_root()
     if root is None:
@@ -110,6 +113,10 @@ def add(title: str, source: str | None, content: str | None, doc_type: str,
     elif content is None:
         content = ""
 
+    raw_ref = None
+    if do_save_raw and content:
+        raw_ref = save_raw(root, ulid, content.encode())
+
     front_matter = f"""\
 ---
 id: {ulid}
@@ -122,6 +129,9 @@ updated: {now}
 
     if source:
         front_matter += f"source: {source}\n"
+
+    if raw_ref:
+        front_matter += f"raw_ref: {raw_ref}\n"
 
     if concepts:
         front_matter += "concepts:\n"
@@ -1000,6 +1010,50 @@ def vectorize(engine: str):
     label = report.get("engine", "tfidf")
     dim_info = f", dim={report['dim']}" if "dim" in report else ""
     click.echo(f"Vectorized {report['docs_vectorized']} document(s) [{label}{dim_info}]")
+
+
+@main.command()
+@click.argument("doc_id")
+def raw(doc_id: str):
+    """Retrieve and display the raw data stored for DOC_ID."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    # Find document file
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    found_path = None
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if fn == f"{doc_id}.md":
+                found_path = os.path.join(dirpath, fn)
+                break
+        if found_path:
+            break
+
+    if not found_path:
+        click.echo(f"Document not found: {doc_id}", err=True)
+        raise SystemExit(1)
+
+    from .graph import _parse_front_matter_yaml
+
+    with open(found_path) as f:
+        text = f.read()
+    meta, _body = _parse_front_matter_yaml(text)
+
+    raw_ref = meta.get("raw_ref")
+    if not raw_ref:
+        click.echo(f"No raw data stored for {doc_id}", err=True)
+        raise SystemExit(1)
+
+    try:
+        data = get_raw(root, raw_ref)
+    except (RuntimeError, ValueError) as e:
+        click.echo(f"Error retrieving raw data: {e}", err=True)
+        raise SystemExit(1)
+
+    click.echo(data.decode(errors="replace"))
 
 
 @main.command()

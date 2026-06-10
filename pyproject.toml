@@ -21,6 +21,9 @@ export = [
 vector = [
     "numpy>=1.24",
 ]
+storage = [
+    "boto3>=1.28",
+]
 
 [project.scripts]
 kb = "kb.cli:main"
