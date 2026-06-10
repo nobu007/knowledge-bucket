@@ -86,6 +86,60 @@ class TestBuildIndex:
             count = build_index(tmp)
             assert count == 0
 
+    def test_no_duplicates_on_rebuild(self):
+        """build_index clears FTS before re-indexing, so no duplicates."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "test.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+
+            build_index(tmp)
+            build_index(tmp)
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            rows = conn.execute(
+                "SELECT count(*) FROM docs WHERE docs MATCH 'Body'"
+            ).fetchone()
+            conn.close()
+            assert rows[0] == 1
+
+    def test_records_head_in_git_repo(self):
+        """build_index stores HEAD so subsequent sync_index can use git-diff."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_git_repo(tmp)
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            _git_commit(tmp, "initial")
+
+            build_index(tmp)
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            stored = _get_meta(conn, "last_indexed_commit")
+            conn.close()
+            assert stored == _git_head(tmp)
+
+    def test_sync_after_build_uses_git_diff(self):
+        """After build_index records HEAD, sync_index uses git-diff (returns 0)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_git_repo(tmp)
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            _git_commit(tmp, "c1")
+
+            build_index(tmp)
+            # sync_index should detect no change via git-diff
+            assert sync_index(tmp) == 0
+
 
 class TestSearch:
     def test_finds_match(self):

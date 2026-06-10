@@ -155,8 +155,8 @@ def ingest():
         click.echo("No files to ingest.")
         return
 
-    count = build_index(root)
-    click.echo(f"Ingested {len(ingested)} file(s), indexed {count} document(s) total")
+    count = sync_index(root)
+    click.echo(f"Ingested {len(ingested)} file(s), indexed {count} new document(s)")
 
 
 @main.command()

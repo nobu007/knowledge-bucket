@@ -94,6 +94,8 @@ def index_document(conn: sqlite3.Connection, doc_id: str, title: str,
 def build_index(root: str) -> int:
     db_path = index_path(root)
     conn = init_db(db_path)
+    conn.execute("DELETE FROM docs")
+    conn.commit()
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     count = 0
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
@@ -116,6 +118,10 @@ def build_index(root: str) -> int:
                 content=body,
             )
             count += 1
+    # Record HEAD so subsequent sync_index can use git-diff
+    head = _git_head(root)
+    if head:
+        _set_meta(conn, "last_indexed_commit", head)
     conn.close()
     return count
 
