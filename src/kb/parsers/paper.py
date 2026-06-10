@@ -2,6 +2,7 @@
 
 import json
 import re
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -54,8 +55,13 @@ def _classify_input(text: str) -> tuple[str, str]:
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
     """Fetch URL content with a simple User-Agent header."""
     req = urllib.request.Request(url, headers={"User-Agent": "knowledge-bucket/0.1"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code} fetching {url}: {e.reason}") from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise RuntimeError(f"Network error fetching {url}: {e}") from e
 
 
 def fetch_arxiv_metadata(arxiv_id: str) -> dict:
@@ -65,7 +71,10 @@ def fetch_arxiv_metadata(arxiv_id: str) -> dict:
     """
     url = _ARXIV_API.format(arxiv_id)
     data = _fetch_url(url)
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        raise RuntimeError(f"Invalid XML from arXiv for {arxiv_id}") from e
 
     ns = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -116,7 +125,10 @@ def fetch_doi_metadata(doi: str) -> dict:
     """
     url = _CROSSREF_API.format(urllib.request.quote(doi, safe=""))
     data = _fetch_url(url)
-    obj = json.loads(data)
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid JSON from CrossRef for {doi}") from e
     msg = obj.get("message", {})
 
     titles = msg.get("title", [])

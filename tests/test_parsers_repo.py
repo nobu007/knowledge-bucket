@@ -1,6 +1,7 @@
 """Tests for src/kb/parsers/repo.py."""
 
 import json
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -193,8 +194,40 @@ def _mock_completed_process(
     stderr: str = "",
 ):
     """Create a mock subprocess.CompletedProcess."""
-    import subprocess
     return subprocess.CompletedProcess(
         args=["gh", "api"], returncode=returncode,
         stdout=stdout, stderr=stderr,
     )
+
+
+# --- Error message tests (Phase 6.1) ---
+
+
+class TestFetchRepoMetadataErrors:
+    @patch("kb.parsers.repo.subprocess.run")
+    def test_gh_not_installed(self, mock_run):
+        mock_run.side_effect = FileNotFoundError
+        with pytest.raises(RuntimeError, match="gh CLI not installed"):
+            fetch_repo_metadata("owner/repo")
+
+    @patch("kb.parsers.repo.subprocess.run")
+    def test_gh_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(["gh"], 30)
+        with pytest.raises(RuntimeError, match="timed out"):
+            fetch_repo_metadata("owner/repo")
+
+    @patch("kb.parsers.repo.subprocess.run")
+    def test_rate_limit(self, mock_run):
+        mock_run.return_value = _mock_completed_process(
+            returncode=1, stderr="rate limit exceeded",
+        )
+        with pytest.raises(RuntimeError, match="rate limit"):
+            fetch_repo_metadata("owner/repo")
+
+    @patch("kb.parsers.repo.subprocess.run")
+    def test_auth_error(self, mock_run):
+        mock_run.return_value = _mock_completed_process(
+            returncode=1, stderr="authentication required. login required.",
+        )
+        with pytest.raises(RuntimeError, match="gh auth required"):
+            fetch_repo_metadata("owner/repo")

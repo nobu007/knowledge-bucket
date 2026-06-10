@@ -40,11 +40,22 @@ def fetch_repo_metadata(url: str) -> dict:
     stargazers_count, topics, html_url, default_branch.
     """
     owner, repo = _parse_owner_repo(url)
-    result = subprocess.run(
-        ["gh", "api", f"repos/{owner}/{repo}"],
-        capture_output=True, text=True, timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{owner}/{repo}"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("gh CLI not installed. Install from https://cli.github.com/")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"gh api timed out for {owner}/{repo}")
+
     if result.returncode != 0:
+        stderr = result.stderr.strip().lower()
+        if "rate limit" in stderr:
+            raise RuntimeError("GitHub API rate limit exceeded. Try again later.")
+        if "authentication" in stderr or "login" in stderr:
+            raise RuntimeError("gh auth required. Run 'gh auth login'.")
         raise RuntimeError(f"gh api failed: {result.stderr.strip()}")
 
     data = json.loads(result.stdout)

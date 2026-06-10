@@ -10,7 +10,11 @@ def extract_pdf_metadata(pdf_path: str) -> dict:
     """
     from pypdf import PdfReader
 
-    reader = PdfReader(pdf_path)
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as e:
+        raise RuntimeError(f"Cannot read PDF {pdf_path}: {e}") from e
+
     info = reader.metadata or {}
 
     title = (info.title or "").strip()
@@ -38,14 +42,21 @@ def extract_pdf_text(pdf_path: str, max_pages: int | None = None) -> str:
     """
     from pypdf import PdfReader
 
-    reader = PdfReader(pdf_path)
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as e:
+        raise RuntimeError(f"Cannot read PDF {pdf_path}: {e}") from e
+
     pages = reader.pages
     if max_pages is not None:
         pages = pages[:max_pages]
 
     parts: list[str] = []
-    for i, page in enumerate(pages, 1):
-        text = page.extract_text()
+    for page in pages:
+        try:
+            text = page.extract_text()
+        except Exception:
+            continue
         if text and text.strip():
             parts.append(text.strip())
 

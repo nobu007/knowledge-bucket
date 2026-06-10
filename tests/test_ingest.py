@@ -4,7 +4,13 @@ import os
 import tempfile
 
 from kb.core import DOC_DIR, INBOX_DIR, RECORDS_DIR, ensure_dirs
-from kb.ingest import _body_from_content, _classify_file, ingest_file, ingest_inbox
+from kb.ingest import (
+    _body_from_content,
+    _classify_file,
+    _has_broken_front_matter,
+    ingest_file,
+    ingest_inbox,
+)
 
 
 class TestClassifyFile:
@@ -356,3 +362,43 @@ class TestIngestInbox:
             snippet = results_new[0]["snippet"]
             assert "neural" in snippet.lower()
             conn.close()
+
+
+# --- Broken front matter handling (Phase 6.1) ---
+
+
+class TestHasBrokenFrontMatter:
+    def test_no_front_matter(self):
+        assert not _has_broken_front_matter("# Hello\n\nWorld")
+
+    def test_valid_front_matter(self):
+        assert not _has_broken_front_matter("---\ntitle: Test\n---\n\nBody")
+
+    def test_incomplete_front_matter(self):
+        assert _has_broken_front_matter("---\ntitle: Broken\nid: test\n")
+
+    def test_empty_with_dash_prefix(self):
+        assert not _has_broken_front_matter("---\n---\n\nBody")
+
+
+class TestIngestBrokenFrontMatter:
+    def test_skips_incomplete_front_matter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "broken.md")
+            with open(inbox_path, "w") as f:
+                f.write("---\ntitle: Broken\nid: test\n")
+
+            result = ingest_file(tmp, inbox_path)
+            assert result is None
+            assert os.path.exists(inbox_path)
+
+    def test_regular_md_not_affected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            inbox_path = os.path.join(tmp, INBOX_DIR, "regular.md")
+            with open(inbox_path, "w") as f:
+                f.write("# Regular Note\n\nJust a normal note")
+
+            result = ingest_file(tmp, inbox_path)
+            assert result is not None

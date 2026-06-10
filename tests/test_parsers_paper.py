@@ -1,6 +1,7 @@
 """Tests for src/kb/parsers/paper.py."""
 
 import json
+import urllib.error
 from unittest.mock import patch
 
 import pytest
@@ -255,3 +256,46 @@ class TestParsePaperDocShape:
         assert set(result.keys()) == {
             "title", "source_url", "source_type", "body", "metadata",
         }
+
+
+# --- Network error handling (Phase 6.1) ---
+
+
+class TestFetchUrlNetworkErrors:
+    """Test graceful handling of network errors in _fetch_url."""
+
+    @patch("kb.parsers.paper.urllib.request.urlopen")
+    def test_http_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "http://example.com", 500, "Internal Server Error", {}, None,
+        )
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            fetch_arxiv_metadata("2301.12345")
+
+    @patch("kb.parsers.paper.urllib.request.urlopen")
+    def test_timeout(self, mock_urlopen):
+        mock_urlopen.side_effect = TimeoutError("timed out")
+        with pytest.raises(RuntimeError, match="Network error"):
+            fetch_arxiv_metadata("2301.12345")
+
+    @patch("kb.parsers.paper.urllib.request.urlopen")
+    def test_connection_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+        with pytest.raises(RuntimeError, match="Network error"):
+            fetch_doi_metadata("10.1234/test")
+
+
+class TestArxivInvalidResponse:
+    @patch("kb.parsers.paper._fetch_url")
+    def test_invalid_xml(self, mock_fetch):
+        mock_fetch.return_value = b"<<< not xml >>>"
+        with pytest.raises(RuntimeError, match="Invalid XML from arXiv"):
+            fetch_arxiv_metadata("2301.12345")
+
+
+class TestDoiInvalidResponse:
+    @patch("kb.parsers.paper._fetch_url")
+    def test_invalid_json(self, mock_fetch):
+        mock_fetch.return_value = b"{{{ not json"
+        with pytest.raises(RuntimeError, match="Invalid JSON from CrossRef"):
+            fetch_doi_metadata("10.1234/test")

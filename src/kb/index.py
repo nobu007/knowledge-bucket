@@ -19,7 +19,7 @@ def index_path(root: str) -> str:
 
 def init_db(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(

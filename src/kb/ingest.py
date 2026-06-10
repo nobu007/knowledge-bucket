@@ -1,6 +1,7 @@
 """Ingest pipeline: process inbox files into proper records."""
 
 import datetime
+import logging
 import os
 import re
 
@@ -16,6 +17,8 @@ from .index import index_path, init_db, reindex_document
 
 _URL_RE = re.compile(r"https?://\S+")
 _SUPPORTED_EXT = {".md", ".txt", ".url"}
+
+logger = logging.getLogger(__name__)
 
 
 def _classify_file(filename: str, content: str) -> tuple[str, str | None, str]:
@@ -58,6 +61,14 @@ def _body_from_content(content: str, source_url: str | None) -> str:
     return body + "\n" if body else ""
 
 
+def _has_broken_front_matter(content: str) -> bool:
+    """Check if content starts with --- but lacks a closing ---."""
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return False
+    return "\n---" not in stripped[3:]
+
+
 def ingest_file(root: str, filepath: str) -> str | None:
     """Process a single inbox file into a record.
 
@@ -78,6 +89,10 @@ def ingest_file(root: str, filepath: str) -> str | None:
         return None
 
     if not content.strip():
+        return None
+
+    if _has_broken_front_matter(content):
+        logger.warning("Skipping %s: incomplete YAML front matter", filepath)
         return None
 
     title, source_url, source_type = _classify_file(basename, content)

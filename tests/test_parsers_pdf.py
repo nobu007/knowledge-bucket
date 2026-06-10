@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kb.parsers.pdf import extract_pdf_metadata, parse_pdf
+from kb.parsers.pdf import extract_pdf_metadata, extract_pdf_text, parse_pdf
 
 
 def _create_test_pdf(
@@ -273,5 +273,30 @@ class TestParsePdfDocShape:
             assert set(result.keys()) == {
                 "title", "source_url", "source_type", "body", "metadata",
             }
+        finally:
+            os.unlink(path)
+
+
+# --- Corrupt PDF handling (Phase 6.1) ---
+
+
+class TestCorruptPdf:
+    def test_extract_metadata_corrupt(self):
+        fd, path = tempfile.mkstemp(suffix=".pdf")
+        os.write(fd, b"not a pdf at all just garbage bytes")
+        os.close(fd)
+        try:
+            with pytest.raises(RuntimeError, match="Cannot read PDF"):
+                extract_pdf_metadata(path)
+        finally:
+            os.unlink(path)
+
+    def test_extract_text_corrupt(self):
+        fd, path = tempfile.mkstemp(suffix=".pdf")
+        os.write(fd, b"corrupt pdf data \x00\x01\x02")
+        os.close(fd)
+        try:
+            with pytest.raises(RuntimeError, match="Cannot read PDF"):
+                extract_pdf_text(path)
         finally:
             os.unlink(path)
