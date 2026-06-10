@@ -652,3 +652,93 @@ class TestRepairIndex:
             assert report["ghost_entries"] == []
             assert report["missing_entries"] == []
             assert report["stale_head"] is False
+
+
+class TestBatchPerformance:
+    """Phase 6.2: verify batch INSERT optimization works correctly with bulk data."""
+
+    def _create_bulk_docs(self, root, n):
+        """Create n documents under root/records/doc/."""
+        doc_dir = os.path.join(root, "records", "doc", "ab", "cd")
+        os.makedirs(doc_dir, exist_ok=True)
+        for i in range(n):
+            with open(os.path.join(doc_dir, f"doc{i:05d}.md"), "w") as f:
+                f.write(f"---\nid: d{i:05d}\ntitle: Doc {i}\n---\n\nContent for doc {i}\n")
+
+    def test_build_index_bulk(self):
+        """build_index handles 1000 docs correctly with batch optimization."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            self._create_bulk_docs(tmp, 100)
+
+            count = build_index(tmp)
+            assert count == 100
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            rows = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+            conn.close()
+            assert rows[0] == 100
+
+    def test_sync_index_bulk_fallback(self):
+        """sync_index fallback path handles bulk docs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            self._create_bulk_docs(tmp, 50)
+
+            added = sync_index(tmp)
+            assert added == 50
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            rows = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+            conn.close()
+            assert rows[0] == 50
+
+    def test_repair_index_bulk_missing(self):
+        """repair_index handles bulk missing files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            self._create_bulk_docs(tmp, 50)
+
+            report = repair_index(tmp)
+            assert report["missing_indexed"] == 50
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            rows = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+            conn.close()
+            assert rows[0] == 50
+
+    def test_build_index_no_duplicates_bulk(self):
+        """build_index still prevents duplicates on rebuild with bulk data."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            self._create_bulk_docs(tmp, 50)
+
+            build_index(tmp)
+            build_index(tmp)
+
+            db = index_path(tmp)
+            conn = init_db(db)
+            rows = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+            conn.close()
+            assert rows[0] == 50
+
+    def test_search_after_bulk_index(self):
+        """FTS search works correctly after bulk index."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            for i in range(20):
+                with open(os.path.join(doc_dir, f"doc{i:05d}.md"), "w") as f:
+                    body = f"Content about topic{i % 5}\n"
+                    f.write(f"---\nid: d{i:05d}\ntitle: Doc {i}\n---\n\n{body}")
+
+            build_index(tmp)
+            db = index_path(tmp)
+            conn = init_db(db)
+            results = search_index(conn, "topic0")
+            assert len(results) == 4  # doc0, doc5, doc10, doc15
+            conn.close()

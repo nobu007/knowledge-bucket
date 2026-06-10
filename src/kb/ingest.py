@@ -4,6 +4,7 @@ import datetime
 import logging
 import os
 import re
+import sqlite3
 
 from .core import DOC_DIR, INBOX_DIR, RECORDS_DIR, generate_ulid, shard_path
 from .dedup import (
@@ -69,13 +70,17 @@ def _has_broken_front_matter(content: str) -> bool:
     return "\n---" not in stripped[3:]
 
 
-def ingest_file(root: str, filepath: str) -> str | None:
+def ingest_file(root: str, filepath: str, conn: sqlite3.Connection | None = None) -> str | None:
     """Process a single inbox file into a record.
 
     Returns the ULID of the new or updated document, or None if skipped.
     If a duplicate source_key exists and content_hash matches, skips the file.
     If a duplicate source_key exists but content changed, updates the existing
     document in-place (GOAL.md section 18).
+
+    When *conn* is provided, the caller manages the connection lifecycle
+    (used by ingest_inbox for batch processing).  Otherwise a new connection
+    is opened and closed per call.
     """
     basename = os.path.basename(filepath)
     _, ext = os.path.splitext(basename)
@@ -110,15 +115,18 @@ def ingest_file(root: str, filepath: str) -> str | None:
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
     # Check for duplicates via sources table
-    db_path = index_path(root)
-    conn = init_db(db_path)
+    own_conn = conn is None
+    if own_conn:
+        db_path = index_path(root)
+        conn = init_db(db_path)
     init_sources_table(conn)
     try:
         existing = check_duplicate(conn, source_key)
         if existing:
             if existing["content_hash"] == content_hash:
                 # Exact duplicate — skip
-                conn.close()
+                if own_conn:
+                    conn.close()
                 os.remove(filepath)
                 return None
             # Content changed — update existing document in-place (GOAL.md section 18)
@@ -148,12 +156,14 @@ def ingest_file(root: str, filepath: str) -> str | None:
                     conn, source_key, source_url, existing_ulid, content_hash, now,
                 )
                 reindex_document(conn, existing_ulid, existing_abs, root)
-                conn.close()
+                if own_conn:
+                    conn.close()
                 os.remove(filepath)
                 return existing_ulid
             # Existing file missing — fall through to create new
     except Exception:
-        conn.close()
+        if own_conn:
+            conn.close()
         raise
     rel = shard_path(ulid)
     abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
@@ -174,27 +184,38 @@ def ingest_file(root: str, filepath: str) -> str | None:
 
     # Register source for future dedup
     register_source(conn, source_key, source_url, ulid, content_hash, now)
-    conn.close()
+    if own_conn:
+        conn.close()
 
     os.remove(filepath)
     return ulid
 
 
 def ingest_inbox(root: str) -> list[str]:
-    """Process all files in inbox/ and return list of created ULIDs."""
+    """Process all files in inbox/ and return list of created ULIDs.
+
+    Opens a single DB connection for the entire batch to avoid per-file
+    connection overhead when ingesting 100+ files.
+    """
     inbox_dir = os.path.join(root, INBOX_DIR)
     if not os.path.isdir(inbox_dir):
         return []
 
+    db_path = index_path(root)
+    conn = init_db(db_path)
+
     ingested: list[str] = []
-    for fn in sorted(os.listdir(inbox_dir)):
-        if fn == ".gitkeep":
-            continue
-        filepath = os.path.join(inbox_dir, fn)
-        if not os.path.isfile(filepath):
-            continue
-        result = ingest_file(root, filepath)
-        if result is not None:
-            ingested.append(result)
+    try:
+        for fn in sorted(os.listdir(inbox_dir)):
+            if fn == ".gitkeep":
+                continue
+            filepath = os.path.join(inbox_dir, fn)
+            if not os.path.isfile(filepath):
+                continue
+            result = ingest_file(root, filepath, conn=conn)
+            if result is not None:
+                ingested.append(result)
+    finally:
+        conn.close()
 
     return ingested

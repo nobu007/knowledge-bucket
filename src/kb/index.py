@@ -82,13 +82,14 @@ def _read_doc(filepath: str) -> tuple[dict, str] | None:
 
 def index_document(conn: sqlite3.Connection, doc_id: str, title: str,
                    source: str | None, source_type: str, rel_path: str,
-                   content: str) -> None:
+                   content: str, *, commit: bool = True) -> None:
     conn.execute(
         "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (doc_id, title, source or "", source_type, rel_path, content),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def build_index(root: str) -> int:
@@ -97,7 +98,7 @@ def build_index(root: str) -> int:
     conn.execute("DELETE FROM docs")
     conn.commit()
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
-    count = 0
+    rows = []
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
         for fn in filenames:
             if not fn.endswith(".md"):
@@ -108,22 +109,27 @@ def build_index(root: str) -> int:
                 continue
             meta, body = result
             rel = os.path.relpath(abs_path, root)
-            index_document(
-                conn,
-                doc_id=meta["id"],
-                title=meta.get("title", ""),
-                source=meta.get("source"),
-                source_type=meta.get("source_type", "web"),
-                rel_path=rel,
-                content=body,
-            )
-            count += 1
+            rows.append((
+                meta["id"],
+                meta.get("title", ""),
+                meta.get("source", ""),
+                meta.get("source_type", "web"),
+                rel,
+                body,
+            ))
+    if rows:
+        conn.executemany(
+            "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
     # Record HEAD so subsequent sync_index can use git-diff
     head = _git_head(root)
     if head:
         _set_meta(conn, "last_indexed_commit", head)
     conn.close()
-    return count
+    return len(rows)
 
 
 def _cleanup_stale(conn: sqlite3.Connection, root: str) -> int:
@@ -159,7 +165,7 @@ def sync_index(root: str) -> int:
     _cleanup_stale(conn, root)
     existing = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
-    added = 0
+    rows = []
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
         for fn in filenames:
             if not fn.endswith(".md"):
@@ -172,17 +178,22 @@ def sync_index(root: str) -> int:
             if meta["id"] in existing:
                 continue
             rel = os.path.relpath(abs_path, root)
-            index_document(
-                conn,
-                doc_id=meta["id"],
-                title=meta.get("title", ""),
-                source=meta.get("source"),
-                source_type=meta.get("source_type", "web"),
-                rel_path=rel,
-                content=body,
-            )
+            rows.append((
+                meta["id"],
+                meta.get("title", ""),
+                meta.get("source", ""),
+                meta.get("source_type", "web"),
+                rel,
+                body,
+            ))
             existing.add(meta["id"])
-            added += 1
+    if rows:
+        conn.executemany(
+            "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
 
     # Record HEAD after full walk so next sync can be diff-based
     head = _git_head(root)
@@ -190,7 +201,7 @@ def sync_index(root: str) -> int:
         _set_meta(conn, "last_indexed_commit", head)
 
     conn.close()
-    return added
+    return len(rows)
 
 
 def _git_head(root: str) -> str | None:
@@ -243,6 +254,7 @@ def _git_diff_sync(conn: sqlite3.Connection, root: str) -> int | None:
         return 0
 
     processed = 0
+    inserts = []
     for line in r.stdout.strip().splitlines():
         parts = line.split("\t", 1)
         if len(parts) != 2:
@@ -259,7 +271,6 @@ def _git_diff_sync(conn: sqlite3.Connection, root: str) -> int | None:
             ).fetchall()
             for (doc_id,) in rows:
                 conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
-            conn.commit()
         else:
             # Added (A) or Modified (M) — reindex
             if os.path.isfile(abs_path):
@@ -270,18 +281,22 @@ def _git_diff_sync(conn: sqlite3.Connection, root: str) -> int | None:
                     conn.execute(
                         "DELETE FROM docs WHERE id = ?", (meta["id"],)
                     )
-                    conn.commit()
-                    index_document(
-                        conn,
-                        doc_id=meta["id"],
-                        title=meta.get("title", ""),
-                        source=meta.get("source"),
-                        source_type=meta.get("source_type", "web"),
-                        rel_path=rel_path,
-                        content=body,
-                    )
+                    inserts.append((
+                        meta["id"],
+                        meta.get("title", ""),
+                        meta.get("source", ""),
+                        meta.get("source_type", "web"),
+                        rel_path,
+                        body,
+                    ))
                     processed += 1
-
+    if inserts:
+        conn.executemany(
+            "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            inserts,
+        )
+    conn.commit()
     _cleanup_stale(conn, root)
     _set_meta(conn, "last_indexed_commit", head)
     return processed
@@ -399,7 +414,7 @@ def repair_index(root: str) -> dict:
 
         # Index missing files
         existing_ids = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
-        added = 0
+        rows = []
         doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
         if os.path.isdir(doc_dir):
             for dirpath, _dirnames, filenames in os.walk(doc_dir):
@@ -413,17 +428,22 @@ def repair_index(root: str) -> dict:
                     meta, body = result
                     if meta["id"] not in existing_ids:
                         rel = os.path.relpath(abs_path, root)
-                        index_document(
-                            conn,
-                            doc_id=meta["id"],
-                            title=meta.get("title", ""),
-                            source=meta.get("source"),
-                            source_type=meta.get("source_type", "web"),
-                            rel_path=rel,
-                            content=body,
-                        )
+                        rows.append((
+                            meta["id"],
+                            meta.get("title", ""),
+                            meta.get("source", ""),
+                            meta.get("source_type", "web"),
+                            rel,
+                            body,
+                        ))
                         existing_ids.add(meta["id"])
-                        added += 1
+        if rows:
+            conn.executemany(
+                "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
 
         # Fix stale HEAD: clear it so next sync_index falls back to full walk
         stale_fixed = False
@@ -448,7 +468,7 @@ def repair_index(root: str) -> dict:
 
         return {
             "ghosts_removed": ghosts_removed,
-            "missing_indexed": added,
+            "missing_indexed": len(rows),
             "stale_head_fixed": stale_fixed,
         }
     finally:

@@ -211,6 +211,11 @@ def build_graph(root: str) -> dict:
     source_edges = 0
     now = datetime.now(UTC).isoformat()
 
+    doc_stats_rows = []
+    doc_concept_rows = []
+    entity_edge_rows = []
+    source_edge_rows = []
+
     for dirpath, _dirnames, filenames in os.walk(doc_dir):
         for fn in filenames:
             if not fn.endswith(".md"):
@@ -222,10 +227,8 @@ def build_graph(root: str) -> dict:
             docs_processed += 1
             doc_id = info["doc_id"]
 
-            conn.execute(
-                "INSERT INTO doc_stats (doc_id, source_type, has_source, importance, updated_at) "
-                "VALUES (?, ?, ?, 0.0, ?)",
-                (doc_id, info["source_type"], int(info["has_source"]), now),
+            doc_stats_rows.append(
+                (doc_id, info["source_type"], int(info["has_source"]), 0.0, now)
             )
 
             for raw_c in info["concepts"]:
@@ -233,59 +236,77 @@ def build_graph(root: str) -> dict:
                 if concept_id in stop:
                     continue
                 concepts_seen[concept_id] = concept_id
-                conn.execute(
-                    "INSERT OR IGNORE INTO doc_concepts "
-                    "(doc_id, concept_id, role, weight) VALUES (?, ?, 'primary', 1.0)",
-                    (doc_id, concept_id),
-                )
+                doc_concept_rows.append((doc_id, concept_id, "primary", 1.0))
 
             for ent in info["entities"]:
                 eid = ent["entity_id"]
                 entities_seen[eid] = ent["label"]
-                conn.execute(
-                    "INSERT OR IGNORE INTO edges "
-                    "(src_id, dst_id, edge_type, weight, updated_at) "
-                    "VALUES (?, ?, 'entity', 1.0, ?)",
-                    (doc_id, eid, now),
-                )
+                entity_edge_rows.append((doc_id, eid, "entity", 1.0, now))
                 entity_edges += 1
 
             src_key = info.get("source_key", "")
             if src_key:
-                conn.execute(
-                    "INSERT OR IGNORE INTO edges "
-                    "(src_id, dst_id, edge_type, weight, updated_at) "
-                    "VALUES (?, ?, 'source', 1.0, ?)",
-                    (doc_id, src_key, now),
-                )
+                source_edge_rows.append((doc_id, src_key, "source", 1.0, now))
                 source_edges += 1
 
-    for cid, label in concepts_seen.items():
-        conn.execute(
+    # Batch insert all collected rows
+    if doc_stats_rows:
+        conn.executemany(
+            "INSERT INTO doc_stats (doc_id, source_type, has_source, importance, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            doc_stats_rows,
+        )
+    if doc_concept_rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO doc_concepts "
+            "(doc_id, concept_id, role, weight) VALUES (?, ?, ?, ?)",
+            doc_concept_rows,
+        )
+    if entity_edge_rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            entity_edge_rows,
+        )
+    if source_edge_rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            source_edge_rows,
+        )
+
+    # Insert concepts in batch
+    concept_rows = [(cid, label, now) for cid, label in concepts_seen.items()]
+    if concept_rows:
+        conn.executemany(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
             "VALUES (?, ?, 'concept', 0, 0, ?) "
             "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
-            (cid, label, now),
+            concept_rows,
         )
 
     # Insert entities into concepts table with kind='entity'
-    for eid, label in entities_seen.items():
-        conn.execute(
+    entity_rows = [(eid, label, now) for eid, label in entities_seen.items()]
+    if entity_rows:
+        conn.executemany(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
             "VALUES (?, ?, 'entity', 0, 0, ?) "
             "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
-            (eid, label, now),
+            entity_rows,
         )
 
     # Mark stop concepts in DB
-    for sc in stop:
-        conn.execute(
+    if stop:
+        conn.executemany(
             "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
             "VALUES (?, ?, 'concept', 0, 1, ?) "
             "ON CONFLICT(concept_id) DO UPDATE SET is_stop=1",
-            (sc, sc, now),
+            [(sc, sc, now) for sc in stop],
         )
 
+    conn.commit()
     compute_df(conn)
     scored = compute_importance(conn)
     conn.close()
