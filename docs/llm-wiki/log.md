@@ -258,3 +258,17 @@ Append durable decisions and completed goal progress here.
   - Format: `sha256:<hex>` prefix to match GOAL.md section 6 schema example
   - Flat front matter field (not nested under `source:`) — consistent with existing `source_key` pattern
 - **GOAL.md section 6 status**: content_hash schema field now persisted to Markdown
+
+## 2026-06-10: build_index records HEAD for git-diff sync pipeline
+
+- **Commit**: `3322802` fix(kb): build_index records HEAD for subsequent git-diff sync, ingest uses sync_index
+- **What**:
+  - `build_index()` now clears FTS table before re-indexing (prevents duplicates) and records `last_indexed_commit` so subsequent `sync_index()` uses O(changes) git-diff instead of O(N) file walk
+  - `kb ingest` CLI switched from `build_index` to `sync_index` — avoids full rebuild on every ingest
+  - 3 new tests: no-duplicate-on-rebuild, HEAD recording in git repo, sync-after-build uses git-diff
+  - 348 total tests pass, lint clean
+- **Decisions**:
+  - `build_index` always clears FTS first (`DELETE FROM docs`) — makes it safe to call repeatedly
+  - HEAD recorded after build_index so `kb index --rebuild` → `kb sync` pipeline uses git-diff
+  - `kb ingest` uses `sync_index` (incremental) since it processes a few new files, not a full rebuild
+- **GOAL.md section 14 status**: both `build_index` and `sync_index` now record HEAD for consistent git-diff pipeline
