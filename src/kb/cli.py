@@ -619,6 +619,69 @@ source: {repo_data['source_url']}
     click.echo(f"  title: {repo_data['title']}")
 
 
+@main.command("add-video")
+@click.argument("url")
+@click.option("--content", default=None, help="Personal notes about the video")
+def add_video(url: str, content: str | None):
+    """Fetch a YouTube video by URL and add it as a video document."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    from .parsers.video import parse_video
+
+    click.echo(f"Fetching {url}...", err=True)
+    try:
+        video_data = parse_video(url, content=content)
+    except (ValueError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+    ulid = generate_ulid()
+    rel_path = shard_path(ulid)
+    abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
+    os.makedirs(abs_dir, exist_ok=True)
+    abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
+
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+
+    video_skey = generate_source_key(
+        video_data["source_type"],
+        source_url=video_data.get("source_url"),
+        doc_ulid=ulid,
+    )
+    front_matter = f"""\
+---
+id: {ulid}
+title: {video_data['title']}
+source_type: {video_data['source_type']}
+source_key: {video_skey}
+created: {now}
+updated: {now}
+source: {video_data['source_url']}
+"""
+    meta = video_data.get("metadata", {})
+    if meta.get("video_id"):
+        front_matter += f"video_id: {meta['video_id']}\n"
+    if meta.get("channel"):
+        front_matter += f"video_channel: {meta['channel']}\n"
+    if meta.get("platform"):
+        front_matter += f"video_platform: {meta['platform']}\n"
+    front_matter += "---\n\n"
+
+    body = video_data["body"]
+    with open(abs_path, "w") as f:
+        f.write(front_matter)
+        f.write(body)
+        if body and not body.endswith("\n"):
+            f.write("\n")
+
+    click.echo(f"Added: {ulid}")
+    click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+    click.echo(f"  title: {video_data['title']}")
+
+
 @main.command()
 @click.argument("doc_id")
 @click.option("--full", is_flag=True, help="Show full body without truncation")
