@@ -6,16 +6,13 @@
 
 ただし、Gitを人間向けフォルダ管理には使わない。
 
-採用する設計は以下。
-
 - 各情報は **1つのMarkdownドキュメント** として保存する
-- 各ドキュメントには **不変ID** を付ける
+- 各ドキュメントには **不変ID（ULID）** を付ける
 - ファイルパスは意味ではなく、IDから生成したハッシュで分散する
 - タグ・カテゴリ・関連リンクはMarkdownに大量に直書きしない
 - AIは「候補概念」を少数だけ出す
-- 実際のグラフ構造はプログラムがSQLite / DuckDB / Parquetなどで生成する
-- Gitに保存するものは「正本」
-- 検索インデックスやグラフDBは「再生成可能なキャッシュ」
+- 実際のグラフ構造はプログラムがSQLiteで生成する
+- Gitに保存するものは「正本」、検索インデックスやグラフDBは「再生成可能なキャッシュ」
 
 ---
 
@@ -25,14 +22,16 @@
 
 |項目|方針|
 |---|---|
-|永続ID|ULID|
+|永続ID|ULID（Crockford Base32、26文字）|
 |物理配置|`sha256(id)` によるシャーディング|
-|正本|Markdown|
-|検索|ローカルSQLite FTS / optional vector index|
-|グラフ|プログラムで生成|
-|カテゴリ|物理フォルダではなく仮想ビュー|
+|正本|Markdown + YAML Front Matter|
+|検索|ローカルSQLite FTS5 / TF-IDF vector index|
+|グラフ|プログラムで生成（SQLiteに格納）|
+|カテゴリ|物理フォルダではなく仮想ビュー（taxonomy.yml）|
 |Git運用|バッチコミット|
 |Rawデータ|原則Git外。必要ならS3 / R2 / Git LFS|
+|実装言語|Python 3.11+、Click CLI|
+|Web UI|Flask + D3.js|
 
 ### 採用しないもの
 
@@ -48,8 +47,6 @@
 ---
 
 ## 3. S3から借りるべき思想
-
-S3をそのまま使う必要はないが、設計思想はかなり参考になる。
 
 |S3の考え方|このシステムでの対応|
 |---|---|
@@ -67,15 +64,21 @@ S3をそのまま使う必要はないが、設計思想はかなり参考にな
 ```text
 knowledge-bucket/
   README.md
+  pyproject.toml
 
   config/
-    kb.yml
-    taxonomy.yml
-    aliases.yml
-    stop_concepts.yml
+    kb.yml              # メイン設定（records_dir、user_interests等）
+    taxonomy.yml         # 仮想コレクション定義
+    aliases.yml          # 概念の表記揺れ正規化
+    stop_concepts.yml    # グラフリンク除外概念
 
   prompts/
-    analyzer_v1.md
+    analyzer_base.md     # 基本分析プロンプト
+    analyzer_web.md      # Web記事用
+    analyzer_paper.md    # 論文用
+    analyzer_repo.md     # Gitリポジトリ用
+    analyzer_pdf.md      # PDF用
+    analyzer_memo.md     # メモ用
 
   records/
     doc/
@@ -86,24 +89,49 @@ knowledge-bucket/
       retrieval-augmented-generation.md
       graph-rag.md
 
-  exports/
-    README.md
-    # 任意。Parquet等のスナップショットを置く場合だけ使う。
+  src/
+    kb/
+      __init__.py
+      cli.py             # Click CLIエントリポイント
+      core.py            # ULID生成、シャーディング、設定管理
+      index.py           # SQLite FTS5インデックス構築・差分同期
+      ingest.py          # inbox → records パイプライン
+      graph.py           # 概念グラフ構築・スコアリング
+      related.py         # 関連文書検索
+      dedup.py           # 重複判定・source_key管理
+      health.py          # グラフ品質メトリクス
+      analyzer.py        # LLM分析プロンプト生成・レスポンス解析
+      vectors.py         # TF-IDF vector index
+      export.py          # Parquetエクスポート
+      concepts.py        # concept note生成・提案
+      sync.py            # Git syncパイプライン
+      web.py             # Flask Web UI
+      parsers/
+        paper.py         # arXiv / DOI メタデータ取得
+        pdf.py           # PDFテキスト抽出（pypdf）
+        repo.py          # GitHub API メタデータ取得
 
-  scripts/
-    README.md
+  tests/
+    test_cli.py
+    test_core.py
+    test_index.py
+    test_ingest.py
+    ...（18ファイル）
 
-  .kb/
-    index.sqlite
-    vector.index
-    cache/
-    inbox/
+  docs/
+    DESIGN.md
+    GOAL.md
 
+  .kb/                   # Git管理外
+    index.db             # SQLiteインデックス
+    vectors.npz          # TF-IDF vector index
+    inbox/               # 処理待ちファイル
+    exports/             # Parquetエクスポート出力先
 ```
 
 `.kb/` はGit管理しない。
 
-`.gitignore` はこうする。
+`.gitignore` で以下を除外：
 
 ```gitignore
 .kb/
@@ -114,24 +142,24 @@ knowledge-bucket/
 raw/
 cache/
 tmp/
+.coverage
 ```
 
 ---
 
 ## 5. ファイルIDと物理パス
 
-各ドキュメントにはULIDを付ける。
-
-例：
+各ドキュメントにはULID（Crockford Base32、26文字）を付ける。
 
 ```text
 01K2Z9P7Y8QWERTY1234567890
+  ^^^^^^^^^^ ^^^^^^^^^^^^^^^
+  タイムスタンプ  ランダム部
 ```
 
-ただし、**ULIDの先頭をフォルダに使ってはいけない。**
+**ULIDの先頭をフォルダに使ってはいけない。** 先頭は時刻なので大量インポート時に同じフォルダへ偏る。
 
-ULIDの先頭は時刻なので、大量インポート時に同じフォルダへ偏る。
-そのため、物理パスは次で決める。
+物理パスはSHA256ハッシュで決める：
 
 ```text
 id = ULID
@@ -140,135 +168,97 @@ shard = sha256(id)[0:4]
 path = records/doc/{shard[0:2]}/{shard[2:4]}/{id}.md
 ```
 
-例：
+例：`records/doc/ab/cd/01K2Z9P7Y8QWERTY1234567890.md`
 
-```text
-records/doc/ab/cd/01K2Z9P7Y8QWERTY1234567890.md
-```
-
-このパスは本文が変わっても変えない。
+このパスは本文が変わっても変えない。シャード深度は `kb.yml` の `shard_depth` で設定可能（デフォルト2）。
 
 ---
 
 ## 6. Markdownスキーマ
 
-各Markdownはこの形式にする。
+各MarkdownはYAML Front Matter + 本文の形式。
+
+### 基本Front Matter
+
+```yaml
+---
+id: "01K2Z9P7Y8QWERTY1234567890"
+title: "記事または論文またはリポジトリのタイトル"
+source_type: web          # web | paper | git_repo | memo | pdf
+source_key: "url:https://example.com/article"
+content_hash: "sha256:abc123..."
+created: "2026-06-07T12:00:00+09:00"
+updated: "2026-06-07T12:00:00+09:00"
+source: "https://example.com/article"  # 任意
+concepts:                               # 任意
+  - concept-a
+  - concept-b
+---
+```
+
+### 入力タイプ固有フィールド
+
+論文の場合：
+
+```yaml
+paper_authors: "Author1, Author2"
+arxiv_id: "2401.12345"
+doi: "10.1234/..."
+paper_published: "2024-01-15"
+```
+
+PDFの場合：
+
+```yaml
+pdf_pages: 42
+pdf_author: "Author Name"
+```
+
+Gitリポジトリの場合：
+
+```yaml
+repo_language: "Python"
+repo_stars: 1234
+repo_topics: "rag, knowledge-graph, sqlite"
+```
+
+### 本文セクション（AI生成）
 
 ```markdown
----
-schema_version: 1
-id: "01K2Z9P7Y8QWERTY1234567890"
-type: "web" # web | paper | git_repo | memo | pdf | video
-status: "active"
-
-title: "記事または論文またはリポジトリのタイトル"
-
-source:
-  source_key: "url:https://example.com/article"
-  url: "https://example.com/article"
-  canonical_url: "https://example.com/article"
-  captured_at: "2026-06-07T12:00:00+09:00"
-  retrieved_at: "2026-06-07T12:00:03+09:00"
-  content_hash: "sha256:..."
-  raw_ref: null
-
-analysis:
-  analyzer_version: "analyzer_v1"
-  model: "gpt-..."
-  language: "ja"
-  confidence: 0.82
-  importance: 0.67
-
-concepts:
-  primary:
-    - id: "concept:retrieval-augmented-generation"
-      label: "Retrieval-Augmented Generation"
-      weight: 0.94
-    - id: "concept:knowledge-graph"
-      label: "Knowledge Graph"
-      weight: 0.81
-  candidates:
-    - id: "concept:graph-rag"
-      label: "GraphRAG"
-      weight: 0.76
-    - id: "concept:markdown-knowledge-base"
-      label: "Markdown Knowledge Base"
-      weight: 0.65
-  entities:
-    - id: "tool:github"
-      label: "GitHub"
-    - id: "tool:sqlite"
-      label: "SQLite"
-
-tags_display:
-  - "AI"
-  - "Git"
-  - "Knowledge Management"
-
-user:
-  note: ""
-  rating: null
-  project: null
----
-
 # 概要
 
-ここにAIが生成した短い概要を書く。
+AIが生成した短い概要。
 
 # 重要ポイント
 
 - 重要ポイント1
 - 重要ポイント2
 - 重要ポイント3
-
-# なぜ保存したか
-
-この情報を後で参照する理由を書く。
-
-# 詳細メモ
-
-必要なら人間またはAIの詳細メモを書く。
-
-# 引用・抜粋
-
-著作権に注意し、必要最小限の抜粋だけ保存する。
-
-# 今後の使い道
-
-- 関連しそうなプロジェクト
-- 調べ直したい論点
-- 実装に使えそうな部分
-
 ```
 
-ポイントは、Markdownに保存するのは **候補概念** までにすること。
-実際にどの概念をグラフの起点にするかは、あとでインデックス側が決める。
+Markdownに保存するのは **候補概念** まで。実際にどの概念をグラフの起点にするかは、インデックス側が決める。
 
 ---
 
 ## 7. 入力タイプごとの差分
 
-Web記事、論文、Gitリポジトリ、メモは、最終的には同じMarkdownになる。
-違うのは最初の抽出処理だけ。
+Web記事、論文、Gitリポジトリ、メモ、PDFは最終的に同じMarkdownになる。違うのは最初の抽出処理だけ。
 
-|入力|抽出するもの|
-|---|---|
-|Web記事|タイトル、本文、著者、公開日、URL|
-|論文|タイトル、著者、Abstract、DOI、arXiv ID、結論|
-|Gitリポジトリ|README、description、topics、language、stars、主要ファイル構成|
-|PDF|テキスト、章構造、図表キャプション|
-|メモ|本文、作成日時、ユーザー指定タグ|
+|入力|抽出するもの|パーサー|
+|---|---|---|
+|Web記事|タイトル、本文、著者、公開日、URL| ingest内で処理 |
+|論文|タイトル、著者、Abstract、DOI、arXiv ID| `parsers/paper.py`|
+|Gitリポジトリ|README、description、topics、language、stars| `parsers/repo.py`|
+|PDF|テキスト、ページ数、著者| `parsers/pdf.py`（pypdf）|
+|メモ|本文、作成日時| ingest内で処理|
 
-Gitリポジトリを保存するときは、最初から全コードをknowledge repoへコピーしない。
-まずはREADME、概要、用途、主要構造、参照URLを保存する。
-必要な場合だけ、別途 shallow clone や Git submodule / Git bundle を検討する。
+Gitリポジトリを保存するときは全コードをコピーしない。README、概要、用途、主要構造、参照URLを保存する。
 
 ---
 
 ## 8. AI分析ルール
 
-AIには自由に大量タグを作らせない。
-必ず制約付きJSONを返させる。
+AIには自由に大量タグを作らせない。制約付きJSONを返させる。
 
 ### AIに出させるもの
 
@@ -290,30 +280,33 @@ AIには自由に大量タグを作らせない。
 - 「AI」「開発」「論文」だけのような粗すぎる概念
 - 本文全体の冗長な再生成
 
-### Analyzer Prompt 方針
+### Analyzerプロンプト構成
+
+入力タイプごとに専用プロンプトを使う：
 
 ```text
-あなたは個人用ナレッジベースの情報圧縮器です。
+prompts/
+  analyzer_base.md     # 共通指示
+  analyzer_web.md      # Web記事向け追加指示
+  analyzer_paper.md    # 論文向け追加指示
+  analyzer_repo.md     # リポジトリ向け追加指示
+  analyzer_pdf.md      # PDF向け追加指示
+  analyzer_memo.md     # メモ向け追加指示
+```
 
-目的:
-入力されたWeb記事、論文、Gitリポジトリ、メモを、
-あとで検索・グラフ化・AI再利用しやすいMarkdownレコードへ変換する。
+共通制約：
 
-制約:
 - primary_concepts は最大3個
 - candidate_concepts は最大5個
 - display_tags は最大8個
 - genericすぎる語を避ける
-- 可能なら複合語・固有名詞・技術名を優先する
-- 「AI」「Web」「開発」「ツール」など単独では広すぎる語をprimaryにしない
+- 複合語・固有名詞・技術名を優先
+- 「AI」「Web」「開発」など単独では広すぎる語をprimaryにしない
 - 出力はJSONのみ
-```
 
 ---
 
 ## 9. タグ・概念・グラフ生成ルール
-
-ここが最重要。
 
 ### 用語を3種類に分ける
 
@@ -323,8 +316,7 @@ AIには自由に大量タグを作らせない。
 |`primary concepts`|その文書の中心概念|最大3|
 |`active graph terms`|実際にグラフ接続に使う概念|最大5|
 
-AIが出した候補をそのままリンクに使わない。
-必ずプログラム側でフィルタする。
+AIが出した候補をそのままリンクに使わない。必ずプログラム側でフィルタする。
 
 ---
 
@@ -343,8 +335,6 @@ df = その概念を持つドキュメント数
 hub_threshold = min(5000, max(50, floor(0.002 * N)))
 ```
 
-例：
-
 |N|hub_threshold|
 |---|---|
 |1,000|50|
@@ -352,37 +342,26 @@ hub_threshold = min(5000, max(50, floor(0.002 * N)))
 |100,000|200|
 |1,000,000|2,000|
 
-`df > hub_threshold` の概念は、広すぎるので文書同士の直接リンクには使わない。
-
-例：
-
-- AI
-- Python
-- GitHub
-- Machine Learning
-- Web
-
-これらは表示タグや大分類としては使ってよい。
-しかし、文書間リンクの根拠にはしない。
+`df > hub_threshold` の概念は文書間リンクに使わない。表示タグや大分類としては使える。
 
 ---
 
 ## 11. active graph terms の選び方
 
-各候補概念にスコアを付ける。
+各候補概念にスコアを付ける：
 
 ```text
 score =
-  0.40 * AI重要度
-+ 0.25 * IDFスコア
-+ 0.15 * 固有名詞/技術名ブースト
-+ 0.10 * 複合語ブースト
-+ 0.10 * ユーザー関心との一致
+  0.40 * AI重要度（weight）
++ 0.25 * IDFスコア（正規化済み）
++ 0.15 * 固有名詞/技術名ブースト（ハイフン含む、大文字含む）
++ 0.10 * 複合語ブースト（複数単語）
++ 0.10 * ユーザー関心との一致（user_interests設定）
 - generic penalty
-- hub penalty
+- hub penalty（二乗ペナルティ）
 ```
 
-その上で、
+選択ルール：
 
 - 最大5個
 - Hub概念は除外
@@ -394,8 +373,7 @@ score =
 
 ## 12. グラフ構造
 
-グラフはMarkdown内に大量に書かない。
-SQLiteなどのインデックスDBに生成する。
+グラフはMarkdown内に書かず、SQLiteに生成する。
 
 ### ノード種別
 
@@ -426,81 +404,114 @@ SQLiteなどのインデックスDBに生成する。
 4. 候補文書だけをスコアリング
 5. 上位5〜10件だけを `document → document` edge として保存
 
-文書間リンクのスコア例：
+スコア：
 
 ```text
 related_score =
   共有する希少概念のIDF合計
-+ BM25類似度
-+ embedding類似度
 + source type補正
 + recency補正
 ```
 
-重要なのは、**全100万文書と比較しない** こと。
+**全100万文書と比較しない。**
 
 ---
 
 ## 13. SQLiteインデックス設計
 
-`.kb/index.sqlite` をローカルに持つ。
-これはGitに入れない。
+`.kb/index.db` をローカルに持つ。Gitに入れない。
 
-主要テーブルは以下。
+### docs（FTS5全文検索）
 
-```text
-docs
-  id
-  path
-  type
-  title
-  source_key
-  url
-  created_at
-  updated_at
-  language
-  summary
-  content_hash
-  importance
-  analyzer_version
-
-concepts
-  concept_id
-  label
-  kind
-  df
-  is_stop
-  created_at
-
-doc_concepts
-  doc_id
-  concept_id
-  role
-  weight
-
-edges
-  src_id
-  dst_id
-  edge_type
-  weight
-  evidence
-  updated_at
-
-sources
-  source_key
-  canonical_url
-  first_doc_id
-  last_doc_id
-
-docs_fts
-  title
-  summary
-  body
-
+```sql
+CREATE VIRTUAL TABLE docs USING fts5(
+    id UNINDEXED,
+    title,
+    source,
+    source_type UNINDEXED,
+    rel_path UNINDEXED,
+    content
+)
 ```
 
-検索は必ずSQLite経由で行う。
-Gitのファイルツリーを人間が直接検索しない。
+### concepts
+
+```sql
+CREATE TABLE concepts (
+    concept_id TEXT PRIMARY KEY,
+    label      TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'concept',  -- concept | entity
+    df         INTEGER NOT NULL DEFAULT 0,
+    is_stop    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+)
+```
+
+`kind` で概念とエンティティを区別する。
+
+### doc_concepts
+
+```sql
+CREATE TABLE doc_concepts (
+    doc_id     TEXT NOT NULL,
+    concept_id TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'primary',  -- primary | candidate
+    weight     REAL NOT NULL DEFAULT 1.0,
+    PRIMARY KEY (doc_id, concept_id)
+) WITHOUT ROWID
+```
+
+### edges
+
+```sql
+CREATE TABLE edges (
+    src_id     TEXT NOT NULL,
+    dst_id     TEXT NOT NULL,
+    edge_type  TEXT NOT NULL,  -- related | cooccurrence | entity | source
+    weight     REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (src_id, dst_id, edge_type)
+) WITHOUT ROWID
+```
+
+### doc_stats
+
+```sql
+CREATE TABLE doc_stats (
+    doc_id      TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL DEFAULT 'web',
+    has_source  INTEGER NOT NULL DEFAULT 0,
+    importance  REAL NOT NULL DEFAULT 0.0,
+    updated_at  TEXT NOT NULL
+)
+```
+
+文書の重要度スコアとメタデータを保持する。
+
+### sources（重複判定用）
+
+```sql
+CREATE TABLE sources (
+    source_key    TEXT PRIMARY KEY,
+    canonical_url TEXT,
+    first_doc_id  TEXT NOT NULL,
+    last_doc_id   TEXT NOT NULL,
+    content_hash  TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+)
+```
+
+### kv_meta（インデックス管理用）
+
+```sql
+CREATE TABLE kv_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+)
+```
+
+`last_indexed_commit` の保存に使い、差分インデックス更新の基準点とする。
 
 ---
 
@@ -508,14 +519,14 @@ Gitのファイルツリーを人間が直接検索しない。
 
 GitのHEADを使って差分更新する。
 
-`.kb/index.sqlite` に最後に処理したGit commitを保存する。
+`kv_meta` テーブルに `last_indexed_commit` を保存する。
 
 ```text
 last_indexed_commit = abc123
 current_head = def456
 ```
 
-更新時は、
+更新時：
 
 ```text
 git diff --name-status abc123 def456 -- records/doc
@@ -523,97 +534,81 @@ git diff --name-status abc123 def456 -- records/doc
 
 で変更ファイルだけ取得し、そのMarkdownだけ再パースする。
 
-初回clone時だけ全件rebuildする。
+- 初回clone時：`kb index --rebuild`（全件rebuild）
+- 通常運用：`kb index --sync`（差分更新）
 
-```bash
-kb index --rebuild
-```
-
-通常運用では、
-
-```bash
-kb index --sync
-```
-
-で差分更新する。
+差分更新時は追加・更新・削除をすべて処理し、古いエントリのクリーンアップも行う。
 
 ---
 
 ## 15. CLI仕様
 
-最低限このCLIを作る。
+Python Clickで実装。`kb` コマンドとしてエントリポイントを提供する。
+
+### 基本コマンド
 
 ```bash
-kb init
-kb add <url-or-file-or-text>
-kb ingest
-kb index --sync
-kb index --rebuild
-kb search "<query>"
-kb show <doc_id>
-kb related <doc_id>
-kb concept <concept_id>
-kb export parquet
-kb sync
+kb init                       # ディレクトリ構造と設定ファイルを初期化
+kb add <url-or-text>          # inboxに追加（--title, --source, --content, --type, --concepts）
+kb ingest                     # inbox内の未処理アイテムを処理
+kb index --sync               # 差分インデックス更新
+kb index --rebuild            # 全件インデックス再構築
+kb search "<query>"           # FTS5検索（--limit, --semantic）
+kb show <doc_id>              # 文書メタデータと本文表示（--full）
+kb related <doc_id>           # 関連文書表示（--limit）
+kb concept <concept_id>       # 概念メタデータ・関連文書・共起概念表示
+kb export parquet             # グラフデータをParquetでエクスポート
+kb sync                       # Git同期パイプライン
+```
+
+### 専用入力コマンド
+
+```bash
+kb add-paper <arxiv-or-doi>   # 論文をarXiv URL/ID、DOI、またはタイトルで追加
+kb add-pdf <file>             # PDFをテキスト抽出して追加
+kb add-repo <github-url>      # GitHubリポジトリをメタデータ取得して追加
+```
+
+### グラフ・分析コマンド
+
+```bash
+kb graph build                # 概念グラフを構築
+kb concepts suggest           # concept noteの昇格候補を提案・生成
+kb analyze                    # 文書のLLM分析プロンプトを構築
+kb health                     # グラフ品質メトリクス表示（--json）
+kb vectorize                  # TF-IDF vector index構築
+kb collections                # 仮想コレクション一覧表示
+kb serve                      # ローカルWeb UI起動（Flask）
 ```
 
 ### `kb add`
 
-入力を `.kb/inbox/` に入れるだけ。
-この時点ではAI分析しない。
-即座に終わること。
-
-```bash
-kb add https://example.com/article
-kb add https://github.com/owner/repo
-kb add paper.pdf
-kb add "あとで調べたいメモ本文"
-```
+入力を inbox に追加するだけ。この時点ではAI分析しない。即座に終わる。
 
 ### `kb ingest`
 
-inbox内の未処理アイテムを処理する。
+inbox内の未処理アイテム（.md, .txt, .url）を処理する：
 
-処理順序：
-
-1. 入力タイプ判定
-2. URL正規化
-3. 本文抽出
-4. source_key生成
-5. 重複判定
-6. AI分析
-7. Markdown生成
-8. records/doc 配下へ保存
-9. SQLite index更新
-
-### `kb search`
-
-SQLite FTSと概念インデックスで検索する。
-
-```bash
-kb search "GraphRAG Git markdown"
-```
-
-### `kb related`
-
-指定文書の近傍グラフを表示する。
-
-```bash
-kb related 01K2Z9P7Y8QWERTY1234567890
-```
+1. ファイル拡張子判定
+2. 内容読み込み・空ファイル除去
+3. 入力タイプ分類（web / memo）
+4. 本文抽出
+5. ULID生成
+6. source_key・content_hash生成
+7. 重複判定（既存なら内容比較 → 同じならスキップ、変更あればin-place更新）
+8. Front Matter生成・ファイル書き出し
+9. inbox内ファイル削除
+10. sourcesテーブル登録
 
 ### `kb sync`
-
-以下をまとめて実行する。
 
 1. `git pull --rebase`
 2. `kb index --sync`
 3. `kb ingest`
 4. `kb index --sync`
-5. テスト
-6. `git add records config prompts`
-7. batch commit
-8. `git push`
+5. `git add records config prompts`
+6. batch commit
+7. `git push`
 
 ---
 
@@ -621,16 +616,7 @@ kb related 01K2Z9P7Y8QWERTY1234567890
 
 ### コミット単位
 
-1件ごとにcommitしない。
-
-推奨：
-
-- 50件ごと
-- 100件ごと
-- 1時間ごと
-- 1日ごと
-
-例：
+1件ごとにcommitしない。推奨：50件ごと、100件ごと、1時間ごと、1日ごと。
 
 ```text
 kb: ingest 128 items on 2026-06-07
@@ -648,11 +634,13 @@ prompts/**
 README.md
 ```
 
-原則Gitに入れないもの：
+Gitに入れないもの：
 
 ```text
-.kb/index.sqlite
-.kb/vector.index
+.kb/index.db
+.kb/vectors.npz
+.kb/exports/*
+.kb/inbox/*
 raw/*
 cache/*
 tmp/*
@@ -660,224 +648,139 @@ tmp/*
 
 ### Rawデータ
 
-記事全文、HTML、PDF、巨大repo snapshotを通常Gitに入れない。
-必要なら以下のどれかにする。
-
-1. 保存しない
-2. 抜粋だけMarkdownへ保存
-3. ローカルraw cacheに保存
-4. S3 / Cloudflare R2へ保存
-5. Git LFSを使う
-
-Markdownには参照だけ書く。
-
-```yaml
-source:
-  raw_ref: "s3://my-kb-raw/web/ab/cd/01K2Z9....html.gz"
-```
+記事全文、HTML、PDF、巨大repo snapshotは通常Gitに入れない。必要ならS3 / R2 / Git LFSを使う。
 
 ---
 
 ## 17. 重複判定
 
-source_keyを必ず作る。
+source_keyを必ず作る。`dedup.py` が管理する。
 
-### Web
+|入力|source_key形式|
+|---|---|
+|Web|`url:<canonical_url>`（UTM除去）|
+|論文|`doi:<doi>` / `arxiv:<arxiv_id>` / `paper:<hash>`（優先順）|
+|GitHub repo|`repo:github.com/owner/name` または `repo:github.com/owner/name@commit`|
+|メモ|`memo:<ulid>`|
 
-```text
-url:<canonical_url>
-```
-
-UTMなどは除去する。
-
-### 論文
-
-優先順：
-
-```text
-doi:<doi>
-arxiv:<arxiv_id>
-paper:<normalized_title_hash>
-```
-
-### GitHub repo
-
-```text
-repo:github.com/owner/name
-```
-
-特定commitを保存する場合：
-
-```text
-repo:github.com/owner/name@commit_sha
-```
-
-### メモ
-
-```text
-memo:<ulid>
-```
-
-同じsource_keyが存在する場合、デフォルトでは新規作成しない。
-既存Markdownを更新する。
+同じsource_keyが存在する場合、新規作成せず既存Markdownを更新する。
 
 ---
 
 ## 18. 更新ルール
 
-同じURLを再取得したとき、
+同じURLを再取得したとき：
 
-- source_keyが同じ
-- content_hashが同じ
+- source_keyが同じ + content_hashが同じ → 何もしない
+- content_hashが変わった → 同じIDのMarkdownをin-place更新、`updated_at` を更新
 
-なら何もしない。
-
-content_hashが変わった場合、
-
-- 同じIDのMarkdownを更新する
-- Git履歴で過去版を保持する
-- 必要なら `updated_at` を更新する
-
-ファイルパスは絶対に変えない。
+ファイルパスは絶対に変えない。Git履歴で過去版を保持する。
 
 ---
 
 ## 19. カテゴリ設計
 
-物理カテゴリフォルダは作らない。
-
-カテゴリはSQLite側の仮想ビューとして扱う。
-
-例：
+物理カテゴリフォルダは作らない。`config/taxonomy.yml` で仮想コレクションを定義する。
 
 ```yaml
-virtual_collections:
-  ai_agents:
-    include_concepts:
-      - concept:ai-agent
-      - concept:tool-use
-      - concept:rag
-
+collections:
   papers:
-    include_types:
-      - paper
-
+    description: "Academic papers"
+    filters:
+      source_type: paper
   github_repos:
-    include_types:
-      - git_repo
+    description: "GitHub repositories"
+    filters:
+      source_type: git_repo
+  pdfs:
+    description: "PDF documents"
+    filters:
+      source_type: pdf
 ```
 
-人間が見るときだけ、
+UIでの表示：
 
 ```text
-AI Agents
-Papers
-GitHub Repos
-最近保存したもの
-重要度が高いもの
-未読
+Papers / GitHub Repos / PDFs / 最近保存したもの / 重要度が高いもの
 ```
-
-のように表示する。
 
 ---
 
 ## 20. concept note
 
-すべての概念をMarkdown化しない。
-重要な概念だけ `records/concept/` に昇格する。
-
-例：
+すべての概念をMarkdown化しない。重要な概念だけ `records/concept/` に昇格する。
 
 ```text
 records/concept/retrieval-augmented-generation.md
 records/concept/graph-rag.md
-records/concept/ulid.md
 ```
 
-concept noteには、
+concept noteには、概念説明、aliases、関連概念、代表文書、自分の理解を書く。
 
-- 概念説明
-- aliases
-- 関連概念
-- 代表文書
-- 自分の理解
-
-を書く。
-
-概念の昇格条件：
+昇格条件：
 
 - 出現頻度が一定以上
 - 自分がよく検索する
 - プロジェクトに関係する
 - AIが中心概念として何度も出す
 
+`kb concepts suggest` で昇格候補を提案・生成できる。
+
 ---
 
 ## 21. 大規模化ルール
 
-最初は1リポジトリでよい。
-
-ただし、以下を超えたら分割を検討する。
-
-- Markdownが30万〜50万件を超える
-- repo sizeが5〜10GBを超える
-- clone / status / push が明確に遅くなる
-- Rawデータを保存したくなる
-
-分割する場合は、IDハッシュで16 shardにする。
+Markdownが30万〜50万件、repo sizeが5〜10GBを超えたらshard分割を検討する。
 
 ```text
 kb-root/
   config/
   prompts/
   shards/
-    0/
-    1/
-    2/
-    ...
-    f/
+    0/ ... f/
 ```
 
-どのshardに入れるか：
+`shard = sha256(id)[0]`
 
-```text
-shard = sha256(id)[0]
-```
-
-ただし、最初からやると運用が面倒なので、v1では単一repoで開始する。
+v1では単一repoで運用する。
 
 ---
 
-## 22. UI方針
+## 22. UI設計
 
-人間はGitHubのファイル一覧を見ない。
+Flask + D3.js でローカルWeb UIを実装。`kb serve` で起動する。
 
-最低限のUIは次のどれかで作る。
+### 画面一覧
 
-- CLI
-- Streamlit
-- FastAPI + React / Next.js
-- Tauri desktop app
-- Obsidianは小規模閲覧用に限定
+|ルート|画面|
+|---|---|
+|`/`|検索 + 最近の文書|
+|`/doc/<doc_id>`|文書詳細 + 関連文書|
+|`/recent`|最近保存した文書一覧|
+|`/categories`|ソースタイプ別カテゴリ一覧|
+|`/categories/<type>`|カテゴリ別文書一覧|
+|`/concepts`|概念一覧|
+|`/concepts/<id>`|概念詳細 + 関連文書 + 共起概念|
+|`/graph`|D3.js インタラクティブフォースグラフ|
+|`/health`|グラフ品質メトリクス|
+|`/collections`|仮想コレクション一覧|
+|`/collections/<name>`|コレクション別文書一覧|
 
-UIが提供する画面：
+### API
 
-1. 全文検索
-2. タグ検索
-3. 概念検索
-4. 文書詳細
-5. 関連文書
-6. concept graph
-7. 最近保存したもの
-8. 未整理 / 要確認
-9. プロジェクト別ビュー
+|エンドポイント|機能|
+|---|---|
+|`/api/recent`|最近の文書JSON|
+|`/api/search`|検索結果JSON|
+|`/api/stats`|統計情報JSON|
+|`/api/graph`|グラフデータJSON|
+|`/api/health`|品質メトリクスJSON|
 
 ---
 
 ## 23. 品質管理メトリクス
 
-定期的に以下を見る。
+`kb health` で確認する指標：
 
 ```text
 総文書数
@@ -888,35 +791,28 @@ orphan文書率
 重複率
 関連リンクの平均次数
 最大次数
-検索ヒット率
-AI分析失敗率
 ```
 
-特に見るべきはこれ。
-
-```text
-Hub概念ランキング
-```
-
-もし、
-
-```text
-AI
-Python
-GitHub
-Web
-Research
-```
-
-のような概念が大量リンクの中心になっていたら、グラフが壊れている。
-
-その場合は `stop_concepts.yml` に入れる。
+Hub概念ランキングが最も重要。AI、Python、GitHub、Web、Research が大量リンクの中心になっていたらグラフが壊れている。`stop_concepts.yml` に入れる。
 
 ---
 
-## 24. stop_concepts.yml
+## 24. 設定ファイル
 
-例：
+### config/kb.yml
+
+```yaml
+records_dir: records
+doc_dir: records/doc
+concept_dir: records/concept
+inbox_dir: .kb/inbox
+shard_depth: 2
+user_interests:
+  - knowledge-management
+  - information-retrieval
+```
+
+### config/stop_concepts.yml
 
 ```yaml
 stop_concepts:
@@ -933,23 +829,17 @@ stop_concepts:
   - javascript
 ```
 
-これらは表示タグとしては使えるが、文書間リンク生成には使わない。
+表示タグとしては使えるが、文書間リンク生成には使わない。
 
----
-
-## 25. aliases.yml
-
-表記揺れを潰す。
+### config/aliases.yml
 
 ```yaml
 aliases:
   rag: retrieval-augmented-generation
   retrieval augmented generation: retrieval-augmented-generation
   retrieval-augmented-generation: retrieval-augmented-generation
-
   graph rag: graph-rag
   graphrag: graph-rag
-
   llm: large-language-model
   large language model: large-language-model
 ```
@@ -958,82 +848,24 @@ AIの出力をそのまま使わず、必ずalias解決する。
 
 ---
 
-## 26. セキュリティと著作権
-
-必須ルール：
+## 25. セキュリティと著作権
 
 - GitHubに置くならprivate repo
 - API keyをMarkdownに書かない
-- private repoや社内文書を保存する場合は特に注意
 - 記事全文やPDF全文を保存すると著作権・規約に触れる可能性がある
 - 原則はURL、要約、自分のメモ、短い引用にする
 - raw保存が必要ならprivate storageに保存する
-- commit前にsecret scanを走らせる
 
 ---
 
-## 27. 実装順序（完了済み）
+## 26. 設計の核心
 
-### Phase 1: 最小版 ✅
+> **Gitに知識を保存する。しかしGitで知識を探さない。Gitは正本、検索とグラフは生成物。**
 
-- `kb init`
-- `kb add`
-- `kb ingest`
-- Markdown生成
-- ULID ID
-- hash shard path
-- SQLite index
-- `kb search`
-- `kb sync`
+3つの重要原則：
 
-### Phase 2: グラフ生成 ✅
+1. **ファイル名はULID、パスはIDハッシュで固定** — 更新でパスが変わらない
+2. **AIは少数の概念候補だけ出す** — タグ爆発を防ぐ
+3. **相互リンクはMarkdownではなくインデックスDBで生成する** — リンク爆発を防ぐ
 
-- concept正規化
-- aliases
-- stop_concepts
-- df / idf計算
-- active graph terms生成
-- document-document edges
-- `kb related`
-
-### Phase 3: AI強化 ✅
-
-- source type別プロンプト
-- Git repo解析
-- 論文解析
-- PDF解析
-- importance推定
-- concept note自動生成候補
-
-### Phase 4: UI ✅
-
-- ローカルWeb UI（Flask）
-- 検索画面
-- 文書詳細
-- 関連文書
-- concept graph
-- 仮想カテゴリビュー
-
-### Phase 5: 大規模化 ✅
-
-- TF-IDF vector index
-- セマンティック検索
-- Parquet export
-- グラフヘルスダッシュボード
-
----
-
-## 28. 設計の核心
-
-> **Gitに知識を保存する。
-> しかしGitで知識を探さない。
-> Gitは正本、検索とグラフは生成物。**
-
-特に重要なのはこの3つ。
-
-1. **ファイル名はULID、パスはIDハッシュで固定**
-2. **AIは少数の概念候補だけ出す**
-3. **相互リンクはMarkdownではなくインデックスDBで生成する**
-
-この設計なら、Web記事、GitHub repo、論文、メモが全部同じパイプラインに乗る。
-しかも、100万件規模になっても「タグ爆発」「リンク爆発」「フォルダ破綻」をかなり抑えられる。
+この設計でWeb記事、GitHub repo、論文、メモが同じパイプラインに乗り、100万件規模でも「タグ爆発」「リンク爆発」「フォルダ破綻」を抑えられる。
