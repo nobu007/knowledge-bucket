@@ -98,10 +98,29 @@ def build_index(root: str) -> int:
     return count
 
 
+def _cleanup_stale(conn: sqlite3.Connection, root: str) -> int:
+    """Remove FTS entries whose files no longer exist on disk. Returns count removed."""
+    rows = conn.execute("SELECT id, rel_path FROM docs").fetchall()
+    removed = 0
+    for doc_id, rel_path in rows:
+        abs_path = os.path.join(root, rel_path)
+        if not os.path.isfile(abs_path):
+            conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+            removed += 1
+    if removed:
+        conn.commit()
+    return removed
+
+
 def sync_index(root: str) -> int:
-    """Incrementally index new documents (skip already-indexed IDs)."""
+    """Incrementally index new documents, reindex changed ones, and remove stale entries."""
     db_path = index_path(root)
     conn = init_db(db_path)
+
+    # 1. Remove ghost entries (files deleted from disk)
+    _cleanup_stale(conn, root)
+
+    # 2. Add new documents (skip already-indexed IDs)
     existing = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     added = 0

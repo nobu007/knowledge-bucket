@@ -5,6 +5,7 @@ import tempfile
 
 from kb.core import ensure_dirs
 from kb.index import (
+    _cleanup_stale,
     build_index,
     index_document,
     index_path,
@@ -12,6 +13,7 @@ from kb.index import (
     parse_front_matter,
     reindex_document,
     search_index,
+    sync_index,
 )
 
 
@@ -164,4 +166,65 @@ class TestReindexDocument:
             result = reindex_document(conn, "doc1", "/nonexistent/path.md", tmp)
             assert result is False
             assert len(search_index(conn, "Some")) == 0
+            conn.close()
+
+
+class TestCleanupStale:
+    def test_removes_ghost_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            # Index two docs
+            index_document(conn, "doc1", "Alive", None, "web",
+                           os.path.join("records", "doc", "aa", "bb", "alive.md"),
+                           "Still here")
+            index_document(conn, "doc2", "Ghost", None, "web",
+                           os.path.join("records", "doc", "cc", "dd", "ghost.md"),
+                           "Deleted from disk")
+            # Create only one file on disk
+            alive_path = os.path.join(
+                tmp, "records", "doc", "aa", "bb", "alive.md"
+            )
+            os.makedirs(os.path.dirname(alive_path), exist_ok=True)
+            with open(alive_path, "w") as f:
+                f.write("---\nid: doc1\ntitle: Alive\n---\n\nStill here\n")
+
+            removed = _cleanup_stale(conn, tmp)
+            assert removed == 1
+            assert len(
+                conn.execute(
+                    "SELECT id FROM docs WHERE id = ?", ("doc2",)
+                ).fetchall()
+            ) == 0
+            assert len(
+                conn.execute(
+                    "SELECT id FROM docs WHERE id = ?", ("doc1",)
+                ).fetchall()
+            ) == 1
+            conn.close()
+
+    def test_sync_index_removes_ghosts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            db = index_path(tmp)
+            conn = init_db(db)
+            # Insert a ghost entry (no file on disk)
+            index_document(
+                conn, "ghost1", "Phantom", None, "web",
+                os.path.join("records", "doc", "xx", "yy", "phantom.md"),
+                "Does not exist",
+            )
+            conn.close()
+
+            # sync_index should clean up the ghost
+            added = sync_index(tmp)
+            assert added == 0
+
+            conn = init_db(db)
+            assert len(
+                conn.execute(
+                    "SELECT id FROM docs WHERE id = ?", ("ghost1",)
+                ).fetchall()
+            ) == 0
             conn.close()
