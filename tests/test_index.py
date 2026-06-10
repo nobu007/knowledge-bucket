@@ -1,13 +1,16 @@
 """Tests for index module: SQLite FTS5 indexing and search."""
 
 import os
+import sqlite3
 import subprocess
 import tempfile
+from unittest.mock import patch
 
 from kb.core import ensure_dirs
 from kb.index import (
     _cleanup_stale,
     _get_meta,
+    _retry_locked,
     _set_meta,
     build_index,
     index_document,
@@ -742,3 +745,86 @@ class TestBatchPerformance:
             results = search_index(conn, "topic0")
             assert len(results) == 4  # doc0, doc5, doc10, doc15
             conn.close()
+
+
+# --- SQLite lock retry (Phase 6.1) ---
+
+
+class TestRetryLocked:
+    """Test _retry_locked decorator behavior on database locked errors."""
+
+    def test_succeeds_immediately(self):
+        call_count = 0
+
+        @_retry_locked
+        def ok_fn():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        assert ok_fn() == "success"
+        assert call_count == 1
+
+    def test_retries_on_locked_then_succeeds(self):
+        call_count = 0
+
+        @_retry_locked
+        def flaky_fn():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return "recovered"
+
+        assert flaky_fn() == "recovered"
+        assert call_count == 3
+
+    def test_raises_after_max_retries(self):
+        @_retry_locked
+        def always_locked():
+            raise sqlite3.OperationalError("database is locked")
+
+        try:
+            always_locked()
+        except sqlite3.OperationalError as e:
+            assert "locked" in str(e)
+        else:
+            raise AssertionError("Expected OperationalError")
+
+    def test_does_not_retry_non_locked_errors(self):
+        call_count = 0
+
+        @_retry_locked
+        def other_error():
+            nonlocal call_count
+            call_count += 1
+            raise sqlite3.OperationalError("no such table: docs")
+
+        try:
+            other_error()
+        except sqlite3.OperationalError as e:
+            assert "no such table" in str(e)
+        assert call_count == 1
+
+
+class TestBuildIndexRetry:
+    """Verify build_index retries on database locked."""
+
+    @patch("kb.index.init_db")
+    def test_build_index_retries_on_locked(self, mock_init_db):
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+
+            # First call raises locked, second succeeds
+            real_conn = init_db(index_path(tmp))
+            mock_init_db.side_effect = [
+                sqlite3.OperationalError("database is locked"),
+                real_conn,
+            ]
+            # build_index calls init_db once; the decorator retries the whole function
+            count = build_index(tmp)
+            assert count == 1

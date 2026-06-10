@@ -16,11 +16,11 @@ Phase 1〜5の基本実装は完了。348テスト合格、lint clean。
 
 ### 6.1 エラーハンドリング強化
 
-- [ ] `parsers/paper.py`: arXiv API / CrossRef API のネットワークエラー時の graceful handling（タイムアウト、HTTPエラー、無効レスポンス）
-- [ ] `parsers/repo.py`: `gh api` 失敗時のエラーメッセージ改善（gh 未インストール、認証エラー、レート制限）
-- [ ] `parsers/pdf.py`: pypdf が例外を投げる破損PDFのハンドリング
-- [ ] `ingest.py`: inbox内の破損Markdown（不正YAML front matter）のスキップと警告出力
-- [ ] `index.py`: SQLiteロック競合時のリトライ（`sqlite3.OperationalError: database is locked`）
+- [x] `parsers/paper.py`: arXiv API / CrossRef API のネットワークエラー時の graceful handling（タイムアウト、HTTPエラー、無効レスポンス）
+- [x] `parsers/repo.py`: `gh api` 失敗時のエラーメッセージ改善（gh 未インストール、認証エラー、レート制限）
+- [x] `parsers/pdf.py`: pypdf が例外を投げる破損PDFのハンドリング
+- [x] `ingest.py`: inbox内の破損Markdown（不正YAML front matter）のスキップと警告出力
+- [x] `index.py`: SQLiteロック競合時のリトライ（`sqlite3.OperationalError: database is locked`）
 
 **完了基準**: 各モジュールのエラーパステストを追加。全テスト合格。
 
@@ -64,9 +64,9 @@ Phase 1〜5の基本実装は完了。348テスト合格、lint clean。
 
 ### 7.3 S3 / R2 Rawデータ保存
 
-- [ ] `src/kb/storage.py`: S3互換ストレージへのアップロードインターフェース
-- [ ] `kb add <url> --save-raw` でHTML/PDF本文をS3/R2に保存、front matterに `raw_ref` を記録
-- [ ] `kb raw <doc_id>` でrawデータの取得・表示
+- [x] `src/kb/storage.py`: S3互換ストレージへのアップロードインターフェース
+- [x] `kb add <url> --save-raw` でHTML/PDF本文をS3/R2に保存、front matterに `raw_ref` を記録
+- [x] `kb raw <doc_id>` でrawデータの取得・表示
 
 **完了基準**: `--save-raw` でファイルがS3/R2にアップロードされ、`raw_ref` がfront matterに記録されること。
 

@@ -1,11 +1,33 @@
 """SQLite FTS5 full-text search index for knowledge bucket documents."""
 
+import functools
 import os
 import re
 import sqlite3
 import subprocess
+import time
 
 from .core import DOC_DIR, RECORDS_DIR
+
+_LOCK_RETRIES = 3
+_LOCK_BASE_DELAY = 0.05
+
+
+def _retry_locked(fn):
+    """Decorator: retry on sqlite3.OperationalError('database is locked')."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        for attempt in range(_LOCK_RETRIES + 1):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt >= _LOCK_RETRIES:
+                    raise
+                time.sleep(_LOCK_BASE_DELAY * (2 ** attempt))
+        return fn(*args, **kwargs)  # unreachable guard
+
+    return wrapper
 
 INDEX_DIR = ".kb"
 INDEX_FILENAME = "index.db"
@@ -92,6 +114,7 @@ def index_document(conn: sqlite3.Connection, doc_id: str, title: str,
         conn.commit()
 
 
+@_retry_locked
 def build_index(root: str) -> int:
     db_path = index_path(root)
     conn = init_db(db_path)
@@ -146,6 +169,7 @@ def _cleanup_stale(conn: sqlite3.Connection, root: str) -> int:
     return removed
 
 
+@_retry_locked
 def sync_index(root: str) -> int:
     """Incrementally index using git-diff when possible, falling back to full walk.
 
@@ -326,6 +350,7 @@ def reindex_document(conn: sqlite3.Connection, doc_id: str, filepath: str, root:
     return True
 
 
+@_retry_locked
 def verify_index(root: str) -> dict:
     """Check consistency between FTS index and actual Markdown files.
 
@@ -393,6 +418,7 @@ def verify_index(root: str) -> dict:
         conn.close()
 
 
+@_retry_locked
 def repair_index(root: str) -> dict:
     """Repair index inconsistencies: remove ghosts, index missing files, fix stale HEAD.
 
