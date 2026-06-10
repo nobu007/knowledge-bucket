@@ -15,8 +15,10 @@ from kb.index import (
     init_db,
     parse_front_matter,
     reindex_document,
+    repair_index,
     search_index,
     sync_index,
+    verify_index,
 )
 
 
@@ -493,3 +495,160 @@ class TestGitDiffSync:
 
             # Second sync should use git diff path (returns 0)
             assert sync_index(tmp) == 0
+
+
+class TestVerifyIndex:
+    def test_consistent_index(self):
+        """verify_index reports no issues when index matches disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            build_index(tmp)
+
+            report = verify_index(tmp)
+            assert report["ghost_entries"] == []
+            assert report["missing_entries"] == []
+            assert report["stale_head"] is False
+
+    def test_detects_ghost_entries(self):
+        """verify_index detects FTS entries whose files are missing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            db = index_path(tmp)
+            conn = init_db(db)
+            index_document(conn, "ghost1", "Phantom", None, "web",
+                           os.path.join("records", "doc", "xx", "yy", "phantom.md"),
+                           "Does not exist")
+            conn.close()
+
+            report = verify_index(tmp)
+            assert "ghost1" in report["ghost_entries"]
+            assert report["missing_entries"] == []
+
+    def test_detects_missing_entries(self):
+        """verify_index detects files on disk not in FTS."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            # Create empty DB so verify doesn't bail early
+            db = index_path(tmp)
+            conn = init_db(db)
+            conn.close()
+
+            report = verify_index(tmp)
+            assert report["ghost_entries"] == []
+            assert len(report["missing_entries"]) == 1
+            assert report["missing_entries"][0][0] == "d1"
+
+    def test_no_db_returns_error(self):
+        """verify_index returns error when no index database exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            report = verify_index(tmp)
+            assert "error" in report
+
+    def test_detects_stale_head(self):
+        """verify_index detects stale last_indexed_commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            build_index(tmp)
+            # Set a fake HEAD that doesn't exist
+            db = index_path(tmp)
+            conn = init_db(db)
+            _set_meta(conn, "last_indexed_commit", "deadbeef" * 5)
+            conn.close()
+
+            report = verify_index(tmp)
+            assert report["stale_head"] is True
+
+
+class TestRepairIndex:
+    def test_removes_ghosts(self):
+        """repair_index removes FTS entries for missing files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            db = index_path(tmp)
+            conn = init_db(db)
+            index_document(conn, "ghost1", "Phantom", None, "web",
+                           os.path.join("records", "doc", "xx", "yy", "phantom.md"),
+                           "Does not exist")
+            conn.close()
+
+            report = repair_index(tmp)
+            assert report["ghosts_removed"] == 1
+            assert report["missing_indexed"] == 0
+
+    def test_indexes_missing_files(self):
+        """repair_index adds files that are on disk but not in FTS."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+
+            report = repair_index(tmp)
+            assert report["ghosts_removed"] == 0
+            assert report["missing_indexed"] == 1
+
+            # Verify it's now searchable
+            conn = init_db(index_path(tmp))
+            results = search_index(conn, "Body")
+            conn.close()
+            assert len(results) == 1
+
+    def test_fixes_stale_head(self):
+        """repair_index clears stale last_indexed_commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            build_index(tmp)
+            db = index_path(tmp)
+            conn = init_db(db)
+            _set_meta(conn, "last_indexed_commit", "deadbeef" * 5)
+            conn.close()
+
+            report = repair_index(tmp)
+            assert report["stale_head_fixed"] is True
+
+    def test_no_issues_to_repair(self):
+        """repair_index reports zeros when index is healthy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            build_index(tmp)
+
+            report = repair_index(tmp)
+            assert report["ghosts_removed"] == 0
+            assert report["missing_indexed"] == 0
+            assert report["stale_head_fixed"] is False
+
+    def test_verify_after_repair_passes(self):
+        """After repair, verify_index reports no issues."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            # Create a file
+            doc_dir = os.path.join(tmp, "records", "doc", "ab", "cd")
+            os.makedirs(doc_dir, exist_ok=True)
+            with open(os.path.join(doc_dir, "a.md"), "w") as f:
+                f.write("---\nid: d1\ntitle: Test\n---\n\nBody\n")
+            # Add a ghost
+            db = index_path(tmp)
+            conn = init_db(db)
+            index_document(conn, "ghost1", "Phantom", None, "web",
+                           os.path.join("records", "doc", "xx", "yy", "phantom.md"),
+                           "Ghost")
+            conn.close()
+
+            repair_index(tmp)
+            report = verify_index(tmp)
+            assert report["ghost_entries"] == []
+            assert report["missing_entries"] == []
+            assert report["stale_head"] is False

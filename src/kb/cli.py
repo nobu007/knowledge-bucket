@@ -28,7 +28,7 @@ from .dedup import generate_source_key
 from .export import export_parquet
 from .graph import build_graph, load_taxonomy, resolve_virtual_collection
 from .health import compute_health
-from .index import build_index, index_path, search_index, sync_index
+from .index import build_index, index_path, repair_index, search_index, sync_index, verify_index
 from .ingest import ingest_inbox
 from .related import build_concept_edges, build_doc_edges, find_cooccurring_concepts, find_related
 from .sync import sync
@@ -162,12 +162,47 @@ def ingest():
 @main.command()
 @click.option("--rebuild", is_flag=True, help="Drop and rebuild index from scratch")
 @click.option("--sync", "do_sync", is_flag=True, help="Incrementally add new documents only")
-def index(rebuild: bool, do_sync: bool):
+@click.option("--verify", is_flag=True, help="Check index consistency")
+@click.option("--repair", is_flag=True, help="Repair index inconsistencies")
+def index(rebuild: bool, do_sync: bool, verify: bool, repair: bool):
     """Build, rebuild, or incrementally sync the SQLite FTS search index."""
     root = kb_root()
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
         raise SystemExit(1)
+
+    if verify:
+        report = verify_index(root)
+        if "error" in report:
+            click.echo(report["error"], err=True)
+            raise SystemExit(1)
+        ok = True
+        if report["ghost_entries"]:
+            ok = False
+            n = len(report["ghost_entries"])
+            click.echo(f"Ghost entries (in index, missing on disk): {n}")
+            for gid in report["ghost_entries"][:10]:
+                click.echo(f"  {gid}")
+        if report["missing_entries"]:
+            ok = False
+            n = len(report["missing_entries"])
+            click.echo(f"Missing entries (on disk, not in index): {n}")
+            for mid, mrel in report["missing_entries"][:10]:
+                click.echo(f"  {mid} ({mrel})")
+        if report["stale_head"]:
+            ok = False
+            click.echo("Stale last_indexed_commit: HEAD reference points to non-existent commit")
+        if ok:
+            click.echo("Index is consistent")
+        raise SystemExit(0 if ok else 1)
+
+    if repair:
+        report = repair_index(root)
+        click.echo(f"Removed {report['ghosts_removed']} ghost entry(ies)")
+        click.echo(f"Indexed {report['missing_indexed']} missing document(s)")
+        if report["stale_head_fixed"]:
+            click.echo("Fixed stale last_indexed_commit reference")
+        return
 
     if rebuild:
         db = index_path(root)

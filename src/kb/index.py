@@ -311,6 +311,150 @@ def reindex_document(conn: sqlite3.Connection, doc_id: str, filepath: str, root:
     return True
 
 
+def verify_index(root: str) -> dict:
+    """Check consistency between FTS index and actual Markdown files.
+
+    Returns a dict with:
+      - ghost_entries: list of doc IDs in FTS but missing on disk
+      - missing_entries: list of (doc_id, rel_path) for files on disk not in FTS
+      - stale_head: True if last_indexed_commit points to non-existent commit
+    """
+    db_path = index_path(root)
+    if not os.path.exists(db_path):
+        return {
+            "ghost_entries": [],
+            "missing_entries": [],
+            "stale_head": False,
+            "error": "No index database found",
+        }
+
+    conn = init_db(db_path)
+    try:
+        # Check for ghost entries (in FTS but file missing)
+        rows = conn.execute("SELECT id, rel_path FROM docs").fetchall()
+        ghost_entries = []
+        indexed_ids = set()
+        for doc_id, rel_path in rows:
+            indexed_ids.add(doc_id)
+            abs_path = os.path.join(root, rel_path)
+            if not os.path.isfile(abs_path):
+                ghost_entries.append(doc_id)
+
+        # Check for missing entries (file on disk but not in FTS)
+        missing_entries = []
+        doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+        if os.path.isdir(doc_dir):
+            for dirpath, _dirnames, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    if not fn.endswith(".md"):
+                        continue
+                    abs_path = os.path.join(dirpath, fn)
+                    result = _read_doc(abs_path)
+                    if result is None:
+                        continue
+                    meta, _body = result
+                    if meta["id"] not in indexed_ids:
+                        rel = os.path.relpath(abs_path, root)
+                        missing_entries.append((meta["id"], rel))
+
+        # Check stale last_indexed_commit
+        stale_head = False
+        last_commit = _get_meta(conn, "last_indexed_commit")
+        if last_commit:
+            try:
+                subprocess.run(
+                    ["git", "cat-file", "-t", last_commit],
+                    cwd=root, capture_output=True, text=True, check=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                stale_head = True
+
+        return {
+            "ghost_entries": ghost_entries,
+            "missing_entries": missing_entries,
+            "stale_head": stale_head,
+        }
+    finally:
+        conn.close()
+
+
+def repair_index(root: str) -> dict:
+    """Repair index inconsistencies: remove ghosts, index missing files, fix stale HEAD.
+
+    Returns a dict with counts of repairs made.
+    """
+    db_path = index_path(root)
+    conn = init_db(db_path)
+    try:
+        # Remove ghost entries
+        rows = conn.execute("SELECT id, rel_path FROM docs").fetchall()
+        ghosts_removed = 0
+        for doc_id, rel_path in rows:
+            abs_path = os.path.join(root, rel_path)
+            if not os.path.isfile(abs_path):
+                conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+                ghosts_removed += 1
+        if ghosts_removed:
+            conn.commit()
+
+        # Index missing files
+        existing_ids = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
+        added = 0
+        doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+        if os.path.isdir(doc_dir):
+            for dirpath, _dirnames, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    if not fn.endswith(".md"):
+                        continue
+                    abs_path = os.path.join(dirpath, fn)
+                    result = _read_doc(abs_path)
+                    if result is None:
+                        continue
+                    meta, body = result
+                    if meta["id"] not in existing_ids:
+                        rel = os.path.relpath(abs_path, root)
+                        index_document(
+                            conn,
+                            doc_id=meta["id"],
+                            title=meta.get("title", ""),
+                            source=meta.get("source"),
+                            source_type=meta.get("source_type", "web"),
+                            rel_path=rel,
+                            content=body,
+                        )
+                        existing_ids.add(meta["id"])
+                        added += 1
+
+        # Fix stale HEAD: clear it so next sync_index falls back to full walk
+        stale_fixed = False
+        last_commit = _get_meta(conn, "last_indexed_commit")
+        if last_commit:
+            try:
+                subprocess.run(
+                    ["git", "cat-file", "-t", last_commit],
+                    cwd=root, capture_output=True, text=True, check=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                conn.execute(
+                    "DELETE FROM kv_meta WHERE key = 'last_indexed_commit'"
+                )
+                conn.commit()
+                stale_fixed = True
+
+        # Update HEAD to current
+        head = _git_head(root)
+        if head:
+            _set_meta(conn, "last_indexed_commit", head)
+
+        return {
+            "ghosts_removed": ghosts_removed,
+            "missing_indexed": added,
+            "stale_head_fixed": stale_fixed,
+        }
+    finally:
+        conn.close()
+
+
 def search_index(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "SELECT id, title, source, source_type, rel_path, "
