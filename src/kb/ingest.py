@@ -12,7 +12,7 @@ from .dedup import (
     init_sources_table,
     register_source,
 )
-from .index import index_path, init_db
+from .index import index_path, init_db, reindex_document
 
 _URL_RE = re.compile(r"https?://\S+")
 _SUPPORTED_EXT = {".md", ".txt", ".url"}
@@ -132,6 +132,7 @@ def ingest_file(root: str, filepath: str) -> str | None:
                 register_source(
                     conn, source_key, source_url, existing_ulid, content_hash, now,
                 )
+                reindex_document(conn, existing_ulid, existing_abs, root)
                 conn.close()
                 os.remove(filepath)
                 return existing_ulid

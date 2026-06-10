@@ -10,6 +10,7 @@ from kb.index import (
     index_path,
     init_db,
     parse_front_matter,
+    reindex_document,
     search_index,
 )
 
@@ -119,3 +120,48 @@ class TestSearch:
 class TestIndexPath:
     def test_path(self):
         assert index_path("/tmp/bucket") == "/tmp/bucket/.kb/index.db"
+
+
+class TestReindexDocument:
+    def test_updates_fts_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+
+            # Create a doc file
+            doc_file = os.path.join(tmp, "doc.md")
+            with open(doc_file, "w") as f:
+                f.write("---\nid: doc1\ntitle: Test\n---\n\nOriginal content\n")
+            index_document(conn, "doc1", "Test", None, "web", "doc.md",
+                           "Original content")
+
+            # Verify original is indexed
+            results = search_index(conn, "Original")
+            assert len(results) == 1
+
+            # Update file on disk
+            with open(doc_file, "w") as f:
+                f.write("---\nid: doc1\ntitle: Updated\n---\n\nNew content here\n")
+
+            # Reindex
+            reindex_document(conn, "doc1", doc_file, tmp)
+
+            # Old content gone, new content findable
+            assert len(search_index(conn, "Original")) == 0
+            results = search_index(conn, "New content")
+            assert len(results) == 1
+            assert results[0]["title"] == "Updated"
+            conn.close()
+
+    def test_removes_fts_on_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            conn = init_db(db)
+            index_document(conn, "doc1", "Test", None, "web", "doc.md",
+                           "Some content")
+
+            # Reindex with nonexistent file
+            result = reindex_document(conn, "doc1", "/nonexistent/path.md", tmp)
+            assert result is False
+            assert len(search_index(conn, "Some")) == 0
+            conn.close()

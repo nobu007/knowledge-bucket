@@ -322,3 +322,37 @@ class TestIngestInbox:
             results = search_index(conn, "retrieval")
             assert len(results) == 1
             conn.close()
+
+    def test_fts_updated_on_content_change(self):
+        """FTS index reflects new content after in-place update (section 18)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            from kb.index import build_index, init_db, search_index
+
+            # First ingest — document with "quantum computing"
+            inbox_path = os.path.join(tmp, INBOX_DIR, "article.url")
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/physics")
+            ulid = ingest_file(tmp, inbox_path)
+            assert ulid is not None
+
+            build_index(tmp)
+            db_path = os.path.join(tmp, ".kb", "index.db")
+            conn = init_db(db_path)
+            # Original content has the URL as source, body is empty
+            results = search_index(conn, "physics")
+            assert len(results) == 1
+            conn.close()
+
+            # Second ingest — same URL, new body about "neural networks"
+            with open(inbox_path, "w") as f:
+                f.write("https://example.com/physics\n\nNeural networks are deep learning models")
+            ingest_file(tmp, inbox_path)
+
+            # Reconnect and search for the new content
+            conn = init_db(db_path)
+            results_new = search_index(conn, "neural")
+            assert len(results_new) == 1
+            snippet = results_new[0]["snippet"]
+            assert "neural" in snippet.lower()
+            conn.close()

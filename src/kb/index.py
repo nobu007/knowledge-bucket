@@ -132,6 +132,30 @@ def sync_index(root: str) -> int:
     return added
 
 
+def reindex_document(conn: sqlite3.Connection, doc_id: str, filepath: str, root: str) -> bool:
+    """Re-index a single document in FTS (delete old + insert new).
+
+    Used when a document is updated in-place (GOAL.md section 18) so that
+    search results reflect the new content immediately.
+    """
+    result = _read_doc(filepath)
+    if result is None:
+        conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+        conn.commit()
+        return False
+    meta, body = result
+    rel = os.path.relpath(filepath, root)
+    conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+    conn.execute(
+        "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (doc_id, meta.get("title", ""), meta.get("source", ""),
+         meta.get("source_type", "web"), rel, body),
+    )
+    conn.commit()
+    return True
+
+
 def search_index(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "SELECT id, title, source, source_type, rel_path, "
