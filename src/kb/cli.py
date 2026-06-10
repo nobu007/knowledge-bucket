@@ -25,6 +25,7 @@ from .core import (
     shard_path,
 )
 from .dedup import generate_source_key
+from .embeddings import build_embeddings, embedding_search
 from .export import export_parquet
 from .graph import build_graph, load_taxonomy, resolve_virtual_collection
 from .health import compute_health
@@ -229,8 +230,20 @@ def search(query: str, limit: int, semantic: bool):
         raise SystemExit(1)
 
     if semantic:
+        # Prefer embedding index over TF-IDF when available
+        emb_path = os.path.join(root, ".kb", "embeddings.npz")
+        vec_path = os.path.join(root, ".kb", "vectors.npz")
         try:
-            results = semantic_search(root, query, limit)
+            if os.path.exists(emb_path):
+                results = embedding_search(root, query, limit)
+            elif os.path.exists(vec_path):
+                results = semantic_search(root, query, limit)
+            else:
+                click.echo(
+                    "No vector index found. Run 'kb vectorize' first.",
+                    err=True,
+                )
+                raise SystemExit(1)
         except FileNotFoundError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
@@ -964,20 +977,29 @@ def health(as_json: bool):
 
 
 @main.command()
-def vectorize():
-    """Build TF-IDF vector index for semantic search."""
+@click.option("--engine", default="tfidf",
+              type=click.Choice(["tfidf", "embedding", "openai", "local"]),
+              help="Engine: tfidf (default), embedding/openai, local (hash)")
+def vectorize(engine: str):
+    """Build vector index for semantic search."""
     root = kb_root()
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
         raise SystemExit(1)
 
     try:
-        report = build_vectors(root)
+        if engine == "tfidf":
+            report = build_vectors(root)
+        else:
+            emb_engine = "openai" if engine in ("embedding", "openai") else "local"
+            report = build_embeddings(root, engine=emb_engine)
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)
 
-    click.echo(f"Vectorized {report['docs_vectorized']} document(s)")
+    label = report.get("engine", "tfidf")
+    dim_info = f", dim={report['dim']}" if "dim" in report else ""
+    click.echo(f"Vectorized {report['docs_vectorized']} document(s) [{label}{dim_info}]")
 
 
 @main.command()

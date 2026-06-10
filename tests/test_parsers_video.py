@@ -12,7 +12,6 @@ from kb.parsers.video import (
     parse_video,
 )
 
-
 # --- Video ID parsing ---
 
 
