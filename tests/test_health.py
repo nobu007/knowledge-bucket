@@ -188,7 +188,7 @@ class TestComputeHealth:
             with open(path) as f:
                 text = f.read()
             text = text.replace(
-                f"source_type: web\n",
+                "source_type: web\n",
                 f"source_type: web\ncontent_hash: {ch}\n",
             )
             with open(path, "w") as f:
