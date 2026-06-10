@@ -272,3 +272,32 @@ Append durable decisions and completed goal progress here.
   - HEAD recorded after build_index so `kb index --rebuild` → `kb sync` pipeline uses git-diff
   - `kb ingest` uses `sync_index` (incremental) since it processes a few new files, not a full rebuild
 - **GOAL.md section 14 status**: both `build_index` and `sync_index` now record HEAD for consistent git-diff pipeline
+
+## 2026-06-11: Phase 7.3 — S3/R2 raw data storage
+
+- **Commit**: `e1c2990` feat(kb): add Phase 7.3 S3/R2 raw data storage — upload, retrieve, CLI integration
+- **What**:
+  - `src/kb/storage.py`: `S3Storage` (boto3), `LocalStorage` (.kb/raw/), `save_raw()`, `get_raw()`, `get_storage_backend()`
+  - `kb add --save-raw` flag: uploads content to configured backend, records `raw_ref` URI in front matter
+  - `kb raw <doc_id>` command: retrieves and displays raw data by `raw_ref`
+  - `boto3>=1.28` optional `[storage]` dependency in pyproject.toml
+  - 22 new tests (unit: LocalStorage, S3Storage mocked, config loading; integration: CLI round-trip), 440 total pass, lint clean
+- **Decisions**:
+  - `LocalStorage` fallback when no storage config in kb.yml — zero-config works for dev/testing
+  - S3 config via kb.yml `storage:` block (backend, bucket, endpoint_url, region, prefix)
+  - `raw_ref` URI scheme: `local://<doc_id>` or `s3://<bucket>/<prefix><doc_id>`
+  - boto3 imported lazily inside `_client()` — no import error without `[storage]` extra
+- **Phase 7 status**: ALL COMPLETE. Video input (7.1), embedding search (7.2), S3/R2 raw storage (7.3) all done
+
+## 2026-06-11: Phase 6.1 — SQLite lock retry (Phase 6.1 complete)
+
+- **Commit**: `dc24a72` feat(kb): add Phase 6.1 SQLite lock retry — _retry_locked decorator on index entry points
+- **What**:
+  - `_retry_locked` decorator in `index.py`: retries up to 3 times with exponential backoff (50ms, 100ms, 200ms) on `sqlite3.OperationalError("database is locked")`
+  - Applied to `build_index`, `sync_index`, `verify_index`, `repair_index` — all high-level functions that manage their own connections
+  - 6 new tests: immediate success, retry-then-succeed, raises after max retries, non-locked errors not retried, build_index retry integration
+- **Decisions**:
+  - Decorator approach keeps retry logic out of business logic; easy to apply to new functions
+  - Only "locked" errors are retried; other OperationalErrors (e.g. "no such table") propagate immediately
+  - 3 retries with exponential backoff balances responsiveness (max ~350ms wait) against contention window
+- **Phase 6.1 status**: ALL COMPLETE. Paper/repo/PDF error handling, broken front matter skip, SQLite lock retry all done with error-path tests
