@@ -335,3 +335,16 @@ Append durable decisions and completed goal progress here.
 
 - **What**: Verified all Phase 9 items implemented and tested. Updated GOAL.md checkboxes: 9.1 (pagination, sorting, editing, dark mode) and 9.3 (DESIGN.md consistency, README.md) marked complete. Updated status line to reflect 478 tests passing.
 - **Phase 9 status**: ALL COMPLETE (9.1 ✅, 9.2 ✅, 9.3 ✅). 478 tests pass, lint clean. Phase 8 deferred until 300k documents/5GB threshold.
+
+## 2026-06-11: Phase 10.2 — repository separation
+
+- **What**:
+  - Fixed `kb/cli.py`: moved `from .export import export_parquet` from unconditional top-level import to lazy import inside the `export` command. This eliminates ModuleNotFoundError when `pyarrow` (optional `[export]` extra) is not installed.
+  - Updated `.gitignore`: added `records/`, `config/`, `inbox/` entries alongside existing `.kb/`. These are user data directories created by `kb init` in separate data repos, not the tool repo.
+  - Data directories (`records/`, `config/`, `inbox/`, `.kb/`) confirmed absent from tool repo — already clean.
+  - Clean venv verification: `pip install .` (no pyarrow) → `kb init /tmp/test` → `kb add --title "test" --content "hello"` → `kb index` → `kb search "hello"` all succeed.
+  - 478 tests pass, lint clean.
+- **Decisions**:
+  - Lazy import pattern for optional-dependency modules: import at point of use in CLI command, not at module top level. `export.py` needs `pyarrow`; `embeddings.py` and `storage.py` already handle optional deps lazily.
+  - `.gitignore` blocks all four data directories at repo root — prevents accidental data commits to the tool repo.
+- **Phase 10.2 status**: COMPLETE. Tool repo has no user data, `.gitignore` blocks data dirs, `pip install .` → full pipeline works in clean venv.

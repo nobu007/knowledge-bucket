@@ -31,7 +31,6 @@ from .core import (
 )
 from .dedup import compute_content_hash, generate_source_key
 from .embeddings import build_embeddings, embedding_search
-from .export import export_parquet
 from .graph import build_graph, load_taxonomy, resolve_virtual_collection
 from .health import compute_health
 from .index import build_index, index_path, repair_index, search_index, sync_index, verify_index
@@ -1117,6 +1116,8 @@ def export(output: str | None):
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
         raise SystemExit(1)
+
+    from .export import export_parquet
 
     try:
         results = export_parquet(root, output_dir=output)

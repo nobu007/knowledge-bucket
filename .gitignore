@@ -2,7 +2,10 @@
 .goal_driven_parallel_dev/
 docs/MEMO.txt
 
-# === regeneratable index cache ===
+# === user data directories (managed by kb init in separate repos) ===
+records/
+config/
+inbox/
 .kb/
 
 # === Python test artifacts ===
