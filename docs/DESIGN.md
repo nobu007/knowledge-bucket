@@ -61,34 +61,14 @@
 
 ## 4. リポジトリ構造
 
+ツールとデータは分離する。ツールはpip install可能なパッケージ、データはユーザーが任意の場所に `kb init` で作成する。
+
+### ツールリポジトリ（`knowledge-bucket/`）
+
 ```text
-knowledge-bucket/
-  README.md
+knowledge-bucket/          # pip install可能なCLIパッケージ
   pyproject.toml
-
-  config/
-    kb.yml              # メイン設定（records_dir、user_interests等）
-    taxonomy.yml         # 仮想コレクション定義
-    aliases.yml          # 概念の表記揺れ正規化
-    stop_concepts.yml    # グラフリンク除外概念
-
-  prompts/
-    analyzer_base.md     # 基本分析プロンプト
-    analyzer_web.md      # Web記事用
-    analyzer_paper.md    # 論文用
-    analyzer_repo.md     # Gitリポジトリ用
-    analyzer_pdf.md      # PDF用
-    analyzer_memo.md     # メモ用
-    analyzer_video.md    # 動画用
-
-  records/
-    doc/
-      ab/
-        cd/
-          01K2Z9P7Y8QWERTY1234567890.md
-    concept/
-      retrieval-augmented-generation.md
-      graph-rag.md
+  README.md
 
   src/
     kb/
@@ -109,6 +89,14 @@ knowledge-bucket/
       concepts.py        # concept note生成・提案
       sync.py            # Git syncパイプライン
       web.py             # Flask Web UI
+      prompts/           # パッケージにバンドル（importlib.resourcesで参照）
+        analyzer_base.md
+        analyzer_web.md
+        analyzer_paper.md
+        analyzer_repo.md
+        analyzer_pdf.md
+        analyzer_memo.md
+        analyzer_video.md
       parsers/
         paper.py         # arXiv / DOI メタデータ取得
         pdf.py           # PDFテキスト抽出（pypdf）
@@ -118,27 +106,57 @@ knowledge-bucket/
   tests/
     test_cli.py
     test_core.py
-    test_index.py
-    test_ingest.py
-    ...（18ファイル）
+    ...（18+ファイル）
 
   docs/
     DESIGN.md
     GOAL.md
+```
 
-  .kb/                   # Git管理外
-    index.db             # SQLiteインデックス
-    vectors.npz          # TF-IDF vector index
-    inbox/               # 処理待ちファイル
-    exports/             # Parquetエクスポート出力先
-    raw/                 # ローカルrawデータ保存先（storage.py）
+### データリポジトリ（ユーザーが `kb init <path>` で作成）
+
+```text
+my-knowledge/              # ユーザーのナレッジデータ（Git管理）
+  config/
+    kb.yml              # メイン設定（records_dir、user_interests等）
+    taxonomy.yml         # 仮想コレクション定義
+    aliases.yml          # 概念の表記揺れ正規化
+    stop_concepts.yml    # グラフリンク除外概念
+
+  records/
+    doc/
+      ab/
+        cd/
+          01K2Z9P7Y8QWERTY1234567890.md
+    concept/
+      retrieval-augmented-generation.md
+      graph-rag.md
+
+  inbox/                   # inboxファイル（.gitkeep付き）
+
+  .kb/                     # Git管理外
+    index.db               # SQLiteインデックス
+    vectors.npz            # TF-IDF vector index
+    embeddings.npz         # Embedding vector index
+    inbox/                 # 処理待ちファイル
+    exports/               # Parquetエクスポート出力先
+    raw/                   # ローカルrawデータ保存先
 ```
 
 `.kb/` はGit管理しない。
 
-`.gitignore` で以下を除外：
+データリポジトリの `.gitignore`：
 
 ```gitignore
+.kb/
+*.sqlite
+*.duckdb
+*.db
+*.log
+raw/
+cache/
+tmp/
+```
 .kb/
 *.sqlite
 *.duckdb

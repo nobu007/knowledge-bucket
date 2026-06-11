@@ -9,7 +9,7 @@
 
 Phase 1〜9完了。478テスト合格、lint clean。
 Phase 8は文書数30万件/repo 5GBまで着手しない。
-Phase 9（実運用と統合品質）完了。
+Phase 10（ツールとデータの分離）を進行中。
 
 ---
 
@@ -68,6 +68,113 @@ Phase 9（実運用と統合品質）完了。
 - [ ] IDハッシュによる16 shard repo分割
 - [ ] バッチ再分析パイプライン（既存文書の再分析を一括実行）
 - [ ] 外部ツール連携（Obsidianプラグイン、モバイル入力UI）
+
+---
+
+## Phase 10: ツールとデータの分離
+
+現在の `knowledge-bucket/` はツール（`src/kb/`）とデータ（`records/`、`config/`）が同一リポジトリにある。これを分離し、ツールをpip install可能なパッケージにする。
+
+### 10.1 プロンプトのパッケージ内包
+
+- [ ] `prompts/` を `src/kb/prompts/` に移動し、パッケージデータとして配布可能にする
+- [ ] `pyproject.toml` に `[tool.setuptools.package-data]` で `prompts/*.md` を含める
+- [ ] `analyzer.py` の `_PROMPTS_DIR` を `importlib.resources` ベースに変更（pip install先でも動くように）
+- [ ] テスト: `pip install .` → 別ディレクトリで `kb init /tmp/test-kb && kb analyze` がプロンプトを読み込めること
+
+**完了基準**: `pip install .` 後に `src/` リポジトリ配下でなく任意のディレクトリからプロンプトがロードできること。
+
+### 10.2 リポジトリの分離
+
+**ツールリポジトリ** `knowledge-bucket/`（本リポジトリ）:
+
+```text
+knowledge-bucket/           # pip install可能なCLIパッケージ
+  pyproject.toml
+  README.md
+  src/kb/
+    __init__.py
+    cli.py
+    core.py
+    index.py
+    ingest.py
+    graph.py
+    related.py
+    dedup.py
+    health.py
+    analyzer.py
+    vectors.py
+    embeddings.py
+    storage.py
+    export.py
+    concepts.py
+    sync.py
+    web.py
+    prompts/                # パッケージにバンドル
+      analyzer_base.md
+      analyzer_web.md
+      analyzer_paper.md
+      analyzer_repo.md
+      analyzer_pdf.md
+      analyzer_memo.md
+      analyzer_video.md
+    parsers/
+      paper.py
+      pdf.py
+      repo.py
+      video.py
+  tests/
+  docs/
+    DESIGN.md
+    GOAL.md
+```
+
+**データリポジトリ**（ユーザーが任意の場所に `kb init` で作成）:
+
+```text
+my-knowledge/               # ユーザーのナレッジデータ（Git管理）
+  config/
+    kb.yml
+    aliases.yml
+    stop_concepts.yml
+    taxonomy.yml
+  records/
+    doc/
+      ab/cd/01K2Z9....md
+    concept/
+      retrieval-augmented-generation.md
+  inbox/
+  .kb/                      # Git管理外
+    index.db
+    vectors.npz
+    embeddings.npz
+    exports/
+    raw/
+```
+
+- [ ] 現在の `knowledge-bucket/` から `records/`、`config/`、`inbox/`、`.kb/` を削除（`.gitignore` は残す）
+- [ ] `knowledge-bucket/` の `kb init .` はツール開発用テストデータとしてのみ使用
+- [ ] ユーザーは別ディレクトリで `kb init ~/my-knowledge` → そこで日常運用
+- [ ] `.gitignore` に `records/`、`config/`、`inbox/`、`.kb/` を追加（ツールリポジトリ側）
+
+**完了基準**: `pip install -e .` 後、別ディレクトリで `kb init` → `kb add` → `kb search` が完動すること。ツールリポジトリにユーザーデータが混入しないこと。
+
+### 10.3 pyproject.toml の配布設定
+
+- [ ] `name = "kb-tools"` にリネーム（`knowledge-bucket` はリポジトリ名として残す）
+- [ ] `version` を適切に管理（初期リリース `0.1.0`）
+- [ ] `[tool.setuptools.package-data]` で `kb/prompts/*.md` を含める
+- [ ] README.md にインストール方法と使い方を追記（`pip install` → `kb init` → `kb add` の流れ）
+
+**完了基準**: 新しい環境で `pip install git+https://github.com/user/knowledge-bucket.git` → `kb init ~/kb` → `kb add --title "test" --content "hello"` が動くこと。
+
+### 10.4 テストの分離対応
+
+- [ ] テストの `kb_root()` フィクスチャが一時ディレクトリを使うことを確認（既存テストがツールリポジトリ内のデータに依存しないこと）
+- [ ] `prompts/` の移動に伴うテストパス修正
+- [ ] `pip install .` 後のスモークテスト追加（`tests/test_install.py`）
+
+**完了基準**: `pip install .` → 別ディレクトリでテストスイートが全件合格すること。
 
 ---
 
