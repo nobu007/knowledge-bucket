@@ -19,6 +19,119 @@ from .related import find_cooccurring_concepts, find_related
 
 _VALID_SOURCE_TYPES = {"web", "paper", "pdf", "git_repo", "repo", "video", "memo"}
 
+_THEME_CSS = """\
+:root {
+  --kb-text: #1a1a1a;
+  --kb-text2: #666;
+  --kb-muted: #888;
+  --kb-bg: #ffffff;
+  --kb-bg2: #f8f9fa;
+  --kb-bg3: #f0f0f0;
+  --kb-border: #eee;
+  --kb-border-input: #ccc;
+  --kb-link: #2563eb;
+  --kb-link-hover: #1d4ed8;
+  --kb-highlight: #fef08a;
+  --kb-btn: #2563eb;
+  --kb-btn-hover: #1d4ed8;
+  --kb-hover: #e0e0e0;
+  --kb-snippet: #444;
+  --kb-badge-bg: #eff6ff;
+  --kb-concept-node: #2563eb;
+  --kb-concept-stroke: var(--kb-concept-stroke);
+  --kb-doc-node: #f59e0b;
+  --kb-doc-stroke: var(--kb-doc-stroke);
+  --kb-graph-bg: #fafafa;
+  --kb-nav-bg: #fff;
+  --kb-tooltip-bg: #1a1a1a;
+  --kb-tooltip-text: #fff;
+  --kb-stat-warn: #d97706;
+  --kb-stat-good: #16a34a;
+  --kb-stat-error: #dc2626;
+}
+body { background: var(--kb-bg); }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --kb-text: #e5e5e5;
+    --kb-text2: #a1a1aa;
+    --kb-muted: #71717a;
+    --kb-bg: #18181b;
+    --kb-bg2: #27272a;
+    --kb-bg3: #3f3f46;
+    --kb-border: #3f3f46;
+    --kb-border-input: #52525b;
+    --kb-link: #60a5fa;
+    --kb-link-hover: #93c5fd;
+    --kb-highlight: #854d0e;
+    --kb-btn: #3b82f6;
+    --kb-btn-hover: #60a5fa;
+    --kb-hover: #52525b;
+    --kb-snippet: #d4d4d8;
+    --kb-badge-bg: #1e3a5f;
+    --kb-concept-node: #60a5fa;
+    --kb-concept-stroke: #3b82f6;
+    --kb-doc-node: #fbbf24;
+    --kb-doc-stroke: #f59e0b;
+    --kb-graph-bg: #18181b;
+    --kb-nav-bg: #27272a;
+    --kb-tooltip-bg: #e5e5e5;
+    --kb-tooltip-text: #18181b;
+    --kb-stat-warn: #fbbf24;
+    --kb-stat-good: #4ade80;
+    --kb-stat-error: #f87171;
+  }
+}
+[data-theme="dark"] {
+  --kb-text: #e5e5e5;
+  --kb-text2: #a1a1aa;
+  --kb-muted: #71717a;
+  --kb-bg: #18181b;
+  --kb-bg2: #27272a;
+  --kb-bg3: #3f3f46;
+  --kb-border: #3f3f46;
+  --kb-border-input: #52525b;
+  --kb-link: #60a5fa;
+  --kb-link-hover: #93c5fd;
+  --kb-highlight: #854d0e;
+  --kb-btn: #3b82f6;
+  --kb-btn-hover: #60a5fa;
+  --kb-hover: #52525b;
+  --kb-snippet: #d4d4d8;
+  --kb-badge-bg: #1e3a5f;
+  --kb-concept-node: #60a5fa;
+  --kb-concept-stroke: #3b82f6;
+  --kb-doc-node: #fbbf24;
+  --kb-doc-stroke: #f59e0b;
+  --kb-graph-bg: #18181b;
+  --kb-nav-bg: #27272a;
+  --kb-tooltip-bg: #e5e5e5;
+  --kb-tooltip-text: #18181b;
+  --kb-stat-warn: #fbbf24;
+  --kb-stat-good: #4ade80;
+  --kb-stat-error: #f87171;
+}
+.theme-toggle {
+  background: var(--kb-bg3); border: 1px solid var(--kb-border-input);
+  border-radius: 4px; padding: 2px 8px; cursor: pointer;
+  font-size: 0.85rem; color: var(--kb-text); margin-left: 0.5rem;
+  vertical-align: middle;
+}
+"""
+
+_THEME_JS = """\
+<script>
+(function(){
+  var t=localStorage.getItem('kb-theme');
+  if(t==='dark') document.documentElement.setAttribute('data-theme','dark');
+})();
+function toggleTheme(){
+  var el=document.documentElement,d=el.getAttribute('data-theme')==='dark';
+  if(d){el.removeAttribute('data-theme');localStorage.removeItem('kb-theme');}
+  else{el.setAttribute('data-theme','dark');localStorage.setItem('kb-theme','dark');}
+}
+</script>
+"""
+
 
 def _sort_order(sort: str) -> str:
     if sort == "importance":
@@ -31,6 +144,17 @@ def _sort_order(sort: str) -> str:
 def create_app(kb_root: str) -> Flask:
     app = Flask(__name__)
     app.config["KB_ROOT"] = kb_root
+
+    @app.after_request
+    def _inject_theme(response):
+        ct = response.content_type or ""
+        if "text/html" in ct and response.status_code == 200:
+            data = response.get_data(as_text=True)
+            if "<style>" in data:
+                data = data.replace("<style>", "<style>\n" + _THEME_CSS, 1)
+                data = data.replace("</body>", _THEME_JS + "\n</body>", 1)
+                response.set_data(data)
+        return response
 
     @app.route("/")
     def index_page():
@@ -488,30 +612,30 @@ _INDEX_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 form { margin-bottom: 2rem; }
 input[type=text] {
   width: 100%; padding: 0.6rem; font-size: 1rem;
-  border: 1px solid #ccc; border-radius: 4px;
+  border: 1px solid var(--kb-border-input); border-radius: 4px;
 }
-.result { border-bottom: 1px solid #eee; padding: 1rem 0; }
+.result { border-bottom: 1px solid var(--kb-border); padding: 1rem 0; }
 .result-title { font-weight: 600; font-size: 1.1rem; }
-.result-title a { color: #2563eb; text-decoration: none; }
-.result-meta { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
-.result-snippet { margin-top: 0.4rem; color: #444; font-size: 0.95rem; }
+.result-title a { color: var(--kb-link); text-decoration: none; }
+.result-meta { font-size: 0.85rem; color: var(--kb-text2); margin-top: 0.25rem; }
+.result-snippet { margin-top: 0.4rem; color: var(--kb-snippet); font-size: 0.95rem; }
 .result-snippet mark {
-  background: #fef08a; padding: 0 2px; border-radius: 2px;
+  background: var(--kb-highlight); padding: 0 2px; border-radius: 2px;
 }
-.empty { color: #888; margin-top: 1rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 .page-link {
   display: inline-block; padding: 0.4rem 0.8rem;
-  background: #f0f0f0; border-radius: 4px;
-  color: #2563eb; text-decoration: none; font-size: 0.9rem;
+  background: var(--kb-bg3); border-radius: 4px;
+  color: var(--kb-link); text-decoration: none; font-size: 0.9rem;
 }
-.page-link:hover { background: #e0e0e0; }
-.page-info { font-size: 0.85rem; color: #666; }
+.page-link:hover { background: var(--kb-hover); }
+.page-info { font-size: 0.85rem; color: var(--kb-text2); }
 </style>
 </head>
 <body>
@@ -524,6 +648,7 @@ input[type=text] {
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <form method="get">
   <input type="text" name="q" value="{{ query }}"
@@ -606,29 +731,29 @@ _DOC_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
-.meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+.meta { color: var(--kb-text2); font-size: 0.85rem; margin-bottom: 1rem; }
 .meta span { margin-right: 1rem; }
 .concepts { margin-bottom: 1rem; }
 .concepts .tag {
-  display: inline-block; background: #f0f0f0;
+  display: inline-block; background: var(--kb-bg3);
   padding: 2px 8px; border-radius: 3px;
   font-size: 0.85rem; margin: 2px;
-  color: #2563eb; text-decoration: none;
+  color: var(--kb-link); text-decoration: none;
 }
 .body { white-space: pre-wrap; line-height: 1.6; margin-bottom: 2rem; }
 h2 {
   font-size: 1.1rem; margin: 1.5rem 0 0.5rem;
-  border-bottom: 1px solid #eee; padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--kb-border); padding-bottom: 0.3rem;
 }
-.related-item { padding: 0.5rem 0; border-bottom: 1px solid #f5f5f5; }
-.related-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.related-item .weight { font-size: 0.8rem; color: #999; }
+.related-item { padding: 0.5rem 0; border-bottom: 1px solid var(--kb-border); }
+.related-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.related-item .weight { font-size: 0.8rem; color: var(--kb-text2); }
 .back {
   display: inline-block; margin-bottom: 1rem;
-  color: #2563eb; text-decoration: none;
+  color: var(--kb-link); text-decoration: none;
 }
 </style>
 </head>
@@ -641,6 +766,7 @@ h2 {
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <a class="back" href="/">&larr; Search</a>
 <a class="back" href="/doc/{{ doc_id }}/edit" style="margin-left:1rem;font-size:0.85rem;">Edit</a>
@@ -662,7 +788,7 @@ h2 {
 {% endif %}
 {% if meta.get('memo') or meta.get('rating') %}
 <div class="user-notes"
-     style="background:#f8f9fa;padding:0.75rem;border-radius:4px;margin-bottom:1rem;">
+     style="background:var(--kb-bg2);padding:0.75rem;border-radius:4px;margin-bottom:1rem;">
 {% if meta.get('rating') %}
 <div style="font-size:0.9rem;">
   <strong>Rating:</strong> {{ meta.rating }}
@@ -701,32 +827,32 @@ _EDIT_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
 nav { margin-bottom: 1rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
-.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
-.meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+nav a { color: var(--kb-link); text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: var(--kb-link); text-decoration: none; }
+.meta { color: var(--kb-text2); font-size: 0.85rem; margin-bottom: 1rem; }
 .form-group { margin-bottom: 1rem; }
 .form-group label { display: block; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.95rem; }
 .form-group input, .form-group textarea {
   width: 100%; padding: 0.5rem; font-size: 0.95rem;
-  border: 1px solid #ccc; border-radius: 4px;
+  border: 1px solid var(--kb-border-input); border-radius: 4px;
 }
 .form-group textarea { min-height: 120px; resize: vertical; }
 .btn {
   display: inline-block; padding: 0.5rem 1.2rem;
-  background: #2563eb; color: #fff; border: none; border-radius: 4px;
+  background: var(--kb-btn); color: #fff; border: none; border-radius: 4px;
   font-size: 1rem; cursor: pointer; text-decoration: none;
 }
-.btn:hover { background: #1d4ed8; }
+.btn:hover { background: var(--kb-btn-hover); }
 .btn-cancel {
   display: inline-block; margin-left: 0.5rem; padding: 0.5rem 1.2rem;
-  background: #f0f0f0; color: #333; border-radius: 4px;
+  background: var(--kb-bg3); color: var(--kb-text); border-radius: 4px;
   font-size: 1rem; text-decoration: none;
 }
-.btn-cancel:hover { background: #e0e0e0; }
+.btn-cancel:hover { background: var(--kb-hover); }
 </style>
 </head>
 <body>
@@ -738,6 +864,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <a class="back" href="/doc/{{ doc_id }}">&larr; Back to document</a>
 <h1>Edit: {{ meta.get('title', doc_id) }}</h1>
@@ -776,22 +903,22 @@ _RECENT_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
-.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
-.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
-.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
-.empty { color: #888; margin-top: 1rem; }
+nav a { color: var(--kb-link); text-decoration: none; }
+.doc-item { border-bottom: 1px solid var(--kb-border); padding: 0.75rem 0; }
+.doc-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; font-size: 1.05rem; }
+.doc-item .meta { font-size: 0.85rem; color: var(--kb-text2); margin-top: 0.25rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 .page-link {
   display: inline-block; padding: 0.4rem 0.8rem;
-  background: #f0f0f0; border-radius: 4px;
-  color: #2563eb; text-decoration: none; font-size: 0.9rem;
+  background: var(--kb-bg3); border-radius: 4px;
+  color: var(--kb-link); text-decoration: none; font-size: 0.9rem;
 }
-.page-link:hover { background: #e0e0e0; }
-.page-info { font-size: 0.85rem; color: #666; }
+.page-link:hover { background: var(--kb-hover); }
+.page-info { font-size: 0.85rem; color: var(--kb-text2); }
 </style>
 </head>
 <body>
@@ -813,6 +940,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 {% if not docs %}
 <p class="empty">No documents yet. Use <code>kb add</code> to add documents.</p>
@@ -856,18 +984,18 @@ _CATEGORIES_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
+nav a { color: var(--kb-link); text-decoration: none; }
 .cat-item {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 0.75rem 0; border-bottom: 1px solid #eee;
+  padding: 0.75rem 0; border-bottom: 1px solid var(--kb-border);
 }
-.cat-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
-.cat-item .count { color: #666; font-size: 0.85rem; }
-.empty { color: #888; margin-top: 1rem; }
+.cat-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; font-size: 1.05rem; }
+.cat-item .count { color: var(--kb-text2); font-size: 0.85rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -880,6 +1008,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 {% if not categories %}
 <p class="empty">No categories yet. Run <code>kb graph build</code> first.</p>
@@ -906,16 +1035,16 @@ _CATEGORY_DETAIL_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
 nav { margin-bottom: 1rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
-.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
-.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
-.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
-.empty { color: #888; margin-top: 1rem; }
+nav a { color: var(--kb-link); text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: var(--kb-link); text-decoration: none; }
+.doc-item { border-bottom: 1px solid var(--kb-border); padding: 0.75rem 0; }
+.doc-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.doc-item .meta { font-size: 0.85rem; color: var(--kb-text2); margin-top: 0.2rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -927,6 +1056,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <a class="back" href="/categories">&larr; All categories</a>
 <h1>{{ source_type }}</h1>
@@ -957,22 +1087,27 @@ _GRAPH_HTML = """\
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, system-ui, sans-serif;
-  color: #1a1a1a; background: #fafafa;
+  color: var(--kb-text); background: var(--kb-graph-bg);
 }
-nav { padding: 1rem; font-size: 0.9rem; background: #fff; border-bottom: 1px solid #eee; }
-nav a { color: #2563eb; text-decoration: none; }
+nav {
+  padding: 1rem; font-size: 0.9rem;
+  background: var(--kb-nav-bg);
+  border-bottom: 1px solid var(--kb-border);
+}
+nav a { color: var(--kb-link); text-decoration: none; }
 #graph { width: 100vw; height: calc(100vh - 50px); }
 .node { cursor: pointer; }
 .node circle { stroke-width: 1.5px; }
-.node.concept circle { fill: #2563eb; stroke: #1d4ed8; }
-.node.doc circle { fill: #f59e0b; stroke: #d97706; }
+.node.concept circle { fill: var(--kb-concept-node); stroke: var(--kb-concept-stroke); }
+.node.doc circle { fill: var(--kb-doc-node); stroke: var(--kb-doc-stroke); }
 .node text { font-size: 11px; pointer-events: none; }
-.link { stroke: #999; stroke-opacity: 0.4; }
+.link { stroke: var(--kb-text2); stroke-opacity: 0.4; }
 .tooltip {
-  position: absolute; padding: 6px 10px; background: #1a1a1a; color: #fff;
+  position: absolute; padding: 6px 10px;
+  background: var(--kb-tooltip-bg); color: var(--kb-tooltip-text);
   border-radius: 4px; font-size: 12px; pointer-events: none; display: none;
 }
-.empty { text-align: center; padding: 4rem 1rem; color: #888; }
+.empty { text-align: center; padding: 4rem 1rem; color: var(--kb-muted); }
 </style>
 </head>
 <body>
@@ -984,6 +1119,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <div id="graph"></div>
 <div class="tooltip" id="tooltip"></div>
@@ -1071,18 +1207,18 @@ _CONCEPTS_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
+nav a { color: var(--kb-link); text-decoration: none; }
 .concept-item {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 0.5rem 0; border-bottom: 1px solid #eee;
+  padding: 0.5rem 0; border-bottom: 1px solid var(--kb-border);
 }
-.concept-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.concept-item .df { color: #666; font-size: 0.85rem; }
-.empty { color: #888; margin-top: 1rem; }
+.concept-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.concept-item .df { color: var(--kb-text2); font-size: 0.85rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -1095,6 +1231,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 {% if not concepts %}
 <p class="empty">No concepts yet. Run <code>kb graph build</code> first.</p>
@@ -1121,26 +1258,26 @@ _CONCEPT_DETAIL_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
 nav { margin-bottom: 1rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
-.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
-.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
-.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
-.empty { color: #888; margin-top: 1rem; }
+nav a { color: var(--kb-link); text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: var(--kb-link); text-decoration: none; }
+.doc-item { border-bottom: 1px solid var(--kb-border); padding: 0.75rem 0; }
+.doc-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.doc-item .meta { font-size: 0.85rem; color: var(--kb-text2); margin-top: 0.2rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 .cooc-item {
-  display: inline-block; background: #eff6ff;
+  display: inline-block; background: var(--kb-badge-bg);
   padding: 3px 10px; border-radius: 3px; margin: 2px;
   font-size: 0.85rem;
 }
-.cooc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.cooc-item .cooc-count { color: #666; font-size: 0.8rem; }
+.cooc-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.cooc-item .cooc-count { color: var(--kb-text2); font-size: 0.8rem; }
 .section-title {
   font-size: 1.1rem; margin: 1.5rem 0 0.5rem;
-  border-bottom: 1px solid #eee; padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--kb-border); padding-bottom: 0.3rem;
 }
 </style>
 </head>
@@ -1153,6 +1290,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <a class="back" href="/concepts">&larr; All concepts</a>
 <h1>{{ concept_label }}</h1>
@@ -1194,18 +1332,18 @@ _COLLECTIONS_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
+nav a { color: var(--kb-link); text-decoration: none; }
 .col-item {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 0.75rem 0; border-bottom: 1px solid #eee;
+  padding: 0.75rem 0; border-bottom: 1px solid var(--kb-border);
 }
-.col-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
-.col-item .count { color: #666; font-size: 0.85rem; }
-.empty { color: #888; margin-top: 1rem; }
+.col-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; font-size: 1.05rem; }
+.col-item .count { color: var(--kb-text2); font-size: 0.85rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -1218,6 +1356,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 {% if not collections %}
 <p class="empty">No virtual collections defined.
@@ -1245,16 +1384,16 @@ _COLLECTION_DETAIL_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
 nav { margin-bottom: 1rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
-.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
-.doc-item { border-bottom: 1px solid #eee; padding: 0.75rem 0; }
-.doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; }
-.doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
-.empty { color: #888; margin-top: 1rem; }
+nav a { color: var(--kb-link); text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: var(--kb-link); text-decoration: none; }
+.doc-item { border-bottom: 1px solid var(--kb-border); padding: 0.75rem 0; }
+.doc-item a { color: var(--kb-link); text-decoration: none; font-weight: 500; }
+.doc-item .meta { font-size: 0.85rem; color: var(--kb-text2); margin-top: 0.2rem; }
+.empty { color: var(--kb-muted); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -1266,6 +1405,7 @@ nav a { color: #2563eb; text-decoration: none; }
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 <a class="back" href="/collections">&larr; All collections</a>
 <h1>{{ label }}</h1>
@@ -1297,45 +1437,45 @@ _HEALTH_HTML = """\
 body {
   font-family: -apple-system, system-ui, sans-serif;
   max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-  color: #1a1a1a;
+  color: var(--kb-text);
 }
 h1 { margin-bottom: 1rem; font-size: 1.5rem; }
 nav { margin-bottom: 1.5rem; font-size: 0.9rem; }
-nav a { color: #2563eb; text-decoration: none; }
+nav a { color: var(--kb-link); text-decoration: none; }
 h2 {
   font-size: 1.1rem; margin: 1.5rem 0 0.5rem;
-  border-bottom: 1px solid #eee; padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--kb-border); padding-bottom: 0.3rem;
 }
 .grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 1rem; margin: 1rem 0;
 }
 .stat-card {
-  background: #f8f9fa; border-radius: 6px; padding: 1rem; text-align: center;
+  background: var(--kb-bg2); border-radius: 6px; padding: 1rem; text-align: center;
 }
-.stat-card .value { font-size: 1.8rem; font-weight: 700; color: #1a1a1a; }
-.stat-card .label { font-size: 0.8rem; color: #666; margin-top: 0.25rem; }
-.stat-card.warn .value { color: #d97706; }
-.stat-card.good .value { color: #16a34a; }
+.stat-card .value { font-size: 1.8rem; font-weight: 700; color: var(--kb-text); }
+.stat-card .label { font-size: 0.8rem; color: var(--kb-text2); margin-top: 0.25rem; }
+.stat-card.warn .value { color: var(--kb-stat-warn); }
+.stat-card.good .value { color: var(--kb-stat-good); }
 .bar-row { display: flex; align-items: center; margin: 0.3rem 0; }
 .bar-row .bar-label { width: 120px; font-size: 0.85rem; text-align: right; padding-right: 0.5rem; }
-.bar-row .bar { height: 20px; background: #2563eb; border-radius: 3px; min-width: 2px; }
-.bar-row .bar-count { font-size: 0.85rem; color: #666; margin-left: 0.5rem; }
+.bar-row .bar { height: 20px; background: var(--kb-btn); border-radius: 3px; min-width: 2px; }
+.bar-row .bar-count { font-size: 0.85rem; color: var(--kb-text2); margin-left: 0.5rem; }
 .concept-list { margin-top: 0.5rem; }
 .concept-item {
-  display: inline-block; background: #f0f0f0;
+  display: inline-block; background: var(--kb-bg3);
   padding: 2px 8px; border-radius: 3px; margin: 2px;
   font-size: 0.85rem;
 }
-.concept-item .df { color: #666; }
+.concept-item .df { color: var(--kb-text2); }
 .metrics-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 0.75rem; margin: 0.5rem 0;
 }
-.metric-item { padding: 0.5rem; background: #f8f9fa; border-radius: 4px; }
+.metric-item { padding: 0.5rem; background: var(--kb-bg2); border-radius: 4px; }
 .metric-item .metric-value { font-weight: 600; font-size: 1.1rem; }
-.metric-item .metric-label { font-size: 0.8rem; color: #666; }
-.error { color: #dc2626; margin-top: 1rem; }
+.metric-item .metric-label { font-size: 0.8rem; color: var(--kb-text2); }
+.error { color: var(--kb-stat-error); margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -1348,6 +1488,7 @@ h2 {
   <a href="/graph">Graph</a> &middot;
   <a href="/health">Health</a> &middot;
   <a href="/collections">Collections</a>
+  <button onclick="toggleTheme()" class="theme-toggle">Theme</button>
 </nav>
 {% if report.get('error') %}
 <p class="error">{{ report.error }}</p>
@@ -1435,7 +1576,7 @@ h2 {
 {% endfor %}
 </div>
 {% else %}
-<p style="color:#888;margin-top:0.5rem;">No concepts yet.</p>
+<p style="color:var(--kb-muted);margin-top:0.5rem;">No concepts yet.</p>
 {% endif %}
 {% endif %}
 </body>

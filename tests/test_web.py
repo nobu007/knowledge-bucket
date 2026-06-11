@@ -662,3 +662,68 @@ class TestDocEdit:
         resp2 = client.get(f"/doc/{doc_id}")
         html = resp2.data.decode()
         assert "not-a-number" not in html
+
+
+class TestDarkMode:
+    def test_css_variables_present(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "--kb-text:" in html
+        assert "--kb-bg:" in html
+        assert "--kb-link:" in html
+        assert "--kb-border:" in html
+
+    def test_prefers_color_scheme_dark(self, client):
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "@media (prefers-color-scheme: dark)" in html
+        assert "--kb-text: #e5e5e5;" in html
+        assert "--kb-bg: #18181b;" in html
+
+    def test_data_theme_dark_selector(self, client):
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert '[data-theme="dark"]' in html
+
+    def test_theme_toggle_button(self, client):
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert 'onclick="toggleTheme()"' in html
+        assert "theme-toggle" in html
+
+    def test_toggle_js_present(self, client):
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "localStorage" in html
+        assert "toggleTheme" in html
+        assert "kb-theme" in html
+
+    def test_theme_injected_on_all_pages(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Theme check")
+        _index_doc(kb, doc_id, "Theme check")
+        pages = [
+            "/",
+            f"/doc/{doc_id}",
+            f"/doc/{doc_id}/edit",
+            "/recent",
+            "/categories",
+            "/concepts",
+            "/graph",
+            "/health",
+            "/collections",
+        ]
+        for url in pages:
+            resp = client.get(url)
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "--kb-text:" in html, f"Missing CSS vars on {url}"
+            assert "toggleTheme" in html, f"Missing toggle JS on {url}"
+
+    def test_uses_var_refs_not_hardcoded_colors(self, client):
+        resp = client.get("/")
+        html = resp.data.decode()
+        # Body text should use var() not hardcoded color
+        assert "var(--kb-text)" in html
+        assert "var(--kb-link)" in html
+        assert "var(--kb-border)" in html
