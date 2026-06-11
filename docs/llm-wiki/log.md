@@ -348,3 +348,24 @@ Append durable decisions and completed goal progress here.
   - Lazy import pattern for optional-dependency modules: import at point of use in CLI command, not at module top level. `export.py` needs `pyarrow`; `embeddings.py` and `storage.py` already handle optional deps lazily.
   - `.gitignore` blocks all four data directories at repo root — prevents accidental data commits to the tool repo.
 - **Phase 10.2 status**: COMPLETE. Tool repo has no user data, `.gitignore` blocks data dirs, `pip install .` → full pipeline works in clean venv.
+
+## 2026-06-11: Phase 10.3 — pyproject.toml distribution config
+
+- **Commit**: `e3e0024` chore(kb): rename package to kb-tools and update README install docs — Phase 10.3
+- **What**:
+  - Renamed `pyproject.toml` package from `knowledge-bucket` to `kb-tools`. Version `0.1.0` and `[tool.setuptools.package-data]` already correct.
+  - Updated `README.md`: replaced minimal setup section with full install instructions (PyPI, GitHub, dev mode) and quickstart walkthrough (`kb init` → `kb add` → `kb index --sync` → `kb search`).
+  - Verified: `pip install .` → installs as `kb-tools-0.1.0`, `kb init /tmp/test-kb-103` → `kb add` → `kb index --sync` → `kb search "hello"` all succeed.
+  - 478 tests pass, lint clean.
+- **Decisions**:
+  - Package name `kb-tools` (short, CLI-focused) while repo keeps `knowledge-bucket` (descriptive).
+- **Phase 10.3 status**: COMPLETE. `pip install git+...` flow documented and verified.
+
+## 2026-06-11: Phase 10.4 — test isolation and install smoke test
+
+- **What**:
+  - Verified all 478 existing tests use `tempfile.TemporaryDirectory()` or `tmp_path` fixtures — none depend on repo-local data directories.
+  - Confirmed prompt loading via `importlib.resources` already works for both dev and pip-installed paths (no path fixes needed).
+  - Added `tests/test_install.py` with 4 smoke tests: full CLI pipeline (init→add→index→search), entry point accessibility, prompts directory location, and all prompt file loading.
+  - 482 tests pass (4 new), lint clean.
+- **Phase 10.4 status**: COMPLETE. All Phase 10 items done.
