@@ -26,14 +26,20 @@ def create_app(kb_root: str) -> Flask:
     @app.route("/")
     def index_page():
         q = request.args.get("q", "").strip()
+        page = request.args.get("page", 1, type=int)
+        per_page = 20
         results = []
         recent = []
+        total = 0
         db_file = index_path(kb_root)
         if q:
             if os.path.exists(db_file):
                 conn = sqlite3.connect(db_file)
                 try:
-                    results = search_index(conn, q, limit=50)
+                    all_results = search_index(conn, q, limit=1000)
+                    total = len(all_results)
+                    offset = (page - 1) * per_page
+                    results = all_results[offset:offset + per_page]
                 finally:
                     conn.close()
         else:
@@ -42,17 +48,23 @@ def create_app(kb_root: str) -> Flask:
                 try:
                     rows = conn.execute(
                         "SELECT id, title, source, source_type FROM docs "
-                        "ORDER BY id DESC LIMIT 20"
+                        "ORDER BY id DESC LIMIT ? OFFSET ?",
+                        (per_page, (page - 1) * per_page),
                     ).fetchall()
                     recent = [
                         {"id": r[0], "title": r[1], "source": r[2],
                          "source_type": r[3]}
                         for r in rows
                     ]
+                    total = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
                 finally:
                     conn.close()
+        total_pages = max(1, -(-total // per_page))
+        has_prev = page > 1
+        has_next = page < total_pages
         return render_template_string(
             _INDEX_HTML, query=q, results=results, recent=recent,
+            page=page, total_pages=total_pages, has_prev=has_prev, has_next=has_next,
         )
 
     @app.route("/doc/<doc_id>")
@@ -98,14 +110,20 @@ def create_app(kb_root: str) -> Flask:
 
     @app.route("/recent")
     def recent_page():
+        page = request.args.get("page", 1, type=int)
+        per_page = 20
+        offset = (page - 1) * per_page
         docs = []
+        total = 0
         db = index_path(kb_root)
         if os.path.exists(db):
             conn = sqlite3.connect(db)
             try:
+                total = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
                 rows = conn.execute(
                     "SELECT id, title, source, source_type FROM docs "
-                    "ORDER BY id DESC LIMIT 50"
+                    "ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (per_page, offset),
                 ).fetchall()
                 docs = [
                     {"id": r[0], "title": r[1], "source": r[2],
@@ -114,7 +132,13 @@ def create_app(kb_root: str) -> Flask:
                 ]
             finally:
                 conn.close()
-        return render_template_string(_RECENT_HTML, docs=docs)
+        total_pages = max(1, -(-total // per_page))
+        has_prev = page > 1
+        has_next = page < total_pages
+        return render_template_string(
+            _RECENT_HTML, docs=docs, page=page,
+            total_pages=total_pages, has_prev=has_prev, has_next=has_next,
+        )
 
     @app.route("/api/recent")
     def api_recent():
@@ -416,6 +440,13 @@ input[type=text] {
   background: #fef08a; padding: 0 2px; border-radius: 2px;
 }
 .empty { color: #888; margin-top: 1rem; }
+.page-link {
+  display: inline-block; padding: 0.4rem 0.8rem;
+  background: #f0f0f0; border-radius: 4px;
+  color: #2563eb; text-decoration: none; font-size: 0.9rem;
+}
+.page-link:hover { background: #e0e0e0; }
+.page-info { font-size: 0.85rem; color: #666; }
 </style>
 </head>
 <body>
@@ -464,6 +495,19 @@ input[type=text] {
 <p style="margin-top:1rem;font-size:0.85rem;">
   <a href="/recent">View more recent documents</a>
 </p>
+{% endif %}
+{% if total_pages > 1 %}
+<div style="margin-top:1.5rem;display:flex;gap:0.5rem;align-items:center;">
+  {% if has_prev %}
+  <a href="/?{% if query %}q={{ query }}&amp;{% endif %}page={{ page - 1 }}"
+     class="page-link">&laquo; Prev</a>
+  {% endif %}
+  <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+  {% if has_next %}
+  <a href="/?{% if query %}q={{ query }}&amp;{% endif %}page={{ page + 1 }}"
+     class="page-link">Next &raquo;</a>
+  {% endif %}
+</div>
 {% endif %}
 </body>
 </html>
@@ -569,6 +613,13 @@ nav a { color: #2563eb; text-decoration: none; }
 .doc-item a { color: #2563eb; text-decoration: none; font-weight: 500; font-size: 1.05rem; }
 .doc-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
 .empty { color: #888; margin-top: 1rem; }
+.page-link {
+  display: inline-block; padding: 0.4rem 0.8rem;
+  background: #f0f0f0; border-radius: 4px;
+  color: #2563eb; text-decoration: none; font-size: 0.9rem;
+}
+.page-link:hover { background: #e0e0e0; }
+.page-info { font-size: 0.85rem; color: #666; }
 </style>
 </head>
 <body>
@@ -594,6 +645,17 @@ nav a { color: #2563eb; text-decoration: none; }
   </div>
 </div>
 {% endfor %}
+{% if total_pages > 1 %}
+<div class="pagination" style="margin-top:1.5rem;display:flex;gap:0.5rem;align-items:center;">
+  {% if has_prev %}
+  <a href="/recent?page={{ page - 1 }}" class="page-link">&laquo; Prev</a>
+  {% endif %}
+  <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+  {% if has_next %}
+  <a href="/recent?page={{ page + 1 }}" class="page-link">Next &raquo;</a>
+  {% endif %}
+</div>
+{% endif %}
 </body>
 </html>
 """

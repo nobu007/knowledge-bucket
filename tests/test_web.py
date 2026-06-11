@@ -394,3 +394,86 @@ class TestRecentPage:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Recent Documents" not in html
+
+
+class TestPagination:
+    def test_recent_pagination_default_page(self, kb, client):
+        d, _ = _add_doc(kb, title="Only doc")
+        _index_doc(kb, d, "Only doc")
+
+        resp = client.get("/recent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Only doc" in html
+        # Single doc shouldn't show pagination
+        assert "Page 1 of 1" not in html
+
+    def test_recent_pagination_multi_page(self, kb, client):
+        for i in range(25):
+            d, _ = _add_doc(kb, title=f"Doc {i:03d}")
+            _index_doc(kb, d, f"Doc {i:03d}")
+
+        # Page 1: first 20 docs
+        resp = client.get("/recent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Page 1 of 2" in html
+        assert "Next" in html
+
+        # Page 2: remaining 5 docs
+        resp2 = client.get("/recent?page=2")
+        assert resp2.status_code == 200
+        html2 = resp2.data.decode()
+        assert "Page 2 of 2" in html2
+        assert "Prev" in html2
+        assert "Next" not in html2
+
+    def test_recent_pagination_out_of_range(self, kb, client):
+        for i in range(5):
+            d, _ = _add_doc(kb, title=f"Doc {i}")
+            _index_doc(kb, d, f"Doc {i}")
+
+        # Page beyond data should return empty doc list but valid page
+        resp = client.get("/recent?page=99")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No documents" in html or "doc-item" not in html
+
+    def test_homepage_recent_pagination(self, kb, client):
+        for i in range(25):
+            d, _ = _add_doc(kb, title=f"Home doc {i:03d}")
+            _index_doc(kb, d, f"Home doc {i:03d}")
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Page 1 of 2" in html
+        assert "Next" in html
+
+        resp2 = client.get("/?page=2")
+        assert resp2.status_code == 200
+        html2 = resp2.data.decode()
+        assert "Page 2 of 2" in html2
+
+    def test_homepage_search_pagination(self, kb, client):
+        for i in range(25):
+            d, _ = _add_doc(
+                kb, title=f"RAG paper {i:03d}",
+                body=f"Retrieval augmented generation {i}",
+            )
+            _index_doc(
+                kb, d, f"RAG paper {i:03d}",
+                content=f"Retrieval augmented generation {i}",
+            )
+
+        resp = client.get("/?q=RAG")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Page 1 of" in html
+        assert "Next" in html
+
+        resp2 = client.get("/?q=RAG&page=2")
+        assert resp2.status_code == 200
+        html2 = resp2.data.decode()
+        assert "Page 2 of" in html2
+        assert "Prev" in html2
