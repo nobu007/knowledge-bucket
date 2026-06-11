@@ -312,3 +312,26 @@ Append durable decisions and completed goal progress here.
 - **Phase 7.2 status**: COMPLETE. `src/kb/embeddings.py` with OpenAI + local engines, `kb vectorize --engine`, `kb search --semantic` with TF-IDF fallback, `.kb/embeddings.npz` storage.
 - **Phase 8**: DEFERRED until 300k+ docs or 5GB+ repo size per GOAL.md.
 - **GOAL STATUS**: ALL IMPLEMENTABLE PHASES COMPLETE.
+
+## 2026-06-11: Phase 9.2 — AI analysis pipeline integration
+
+- **Commit**: `ceb65d0` feat(kb): add AI analysis pipeline with kb ingest --analyze and kb analyze --retry-failed — Phase 9.2
+- **What**:
+  - `call_llm_api(prompt, api_key)` in `analyzer.py`: OpenAI-compatible chat completions via urllib, 0.5s rate limit, 429 exponential backoff (max 3 retries)
+  - `analyze_document(doc_path, api_key)`: reads doc, builds prompt, calls API, writes analysis to front matter
+  - `apply_analysis_to_doc(doc_path, analysis)`: injects summary, analysis block, concepts, tags_display into front matter
+  - `find_docs_without_analysis(root)`: scans all docs for missing `analysis.confidence`
+  - `kb ingest --analyze`: after ingestion, calls LLM API for each new document; warns if `KB_LLM_API_KEY` unset
+  - `kb analyze --retry-failed`: re-analyzes documents missing analysis; requires `KB_LLM_API_KEY`
+  - 8 new tests: API call, 429 retry, non-429 error, API key env, front matter write, find unanalyzed docs
+  - 478 total tests pass, lint clean
+- **Decisions**:
+  - Uses `urllib.request` (stdlib) to avoid adding httpx/requests dependency
+  - API key from `KB_LLM_API_KEY`, base URL from `KB_LLM_BASE_URL` (default: OpenAI), model from `KB_LLM_MODEL` (default: gpt-4o-mini)
+  - Failed analysis leaves plain front matter intact — `--retry-failed` picks them up later
+- **Phase 9.2 status**: COMPLETE. LLM analysis pipeline with rate limiting, retry, and retry-failed all implemented and tested.
+
+## 2026-06-11: Phase 9 complete, GOAL.md checkboxes updated
+
+- **What**: Verified all Phase 9 items implemented and tested. Updated GOAL.md checkboxes: 9.1 (pagination, sorting, editing, dark mode) and 9.3 (DESIGN.md consistency, README.md) marked complete. Updated status line to reflect 478 tests passing.
+- **Phase 9 status**: ALL COMPLETE (9.1 ✅, 9.2 ✅, 9.3 ✅). 478 tests pass, lint clean. Phase 8 deferred until 300k documents/5GB threshold.
