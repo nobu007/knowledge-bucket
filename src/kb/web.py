@@ -3,7 +3,8 @@
 import os
 import sqlite3
 
-from flask import Flask, abort, render_template_string, request
+import yaml
+from flask import Flask, abort, redirect, render_template_string, request, url_for
 
 from .core import DOC_DIR, RECORDS_DIR
 from .graph import (
@@ -85,16 +86,7 @@ def create_app(kb_root: str) -> Flask:
 
     @app.route("/doc/<doc_id>")
     def doc_detail(doc_id: str):
-        doc_dir = os.path.join(kb_root, RECORDS_DIR, DOC_DIR)
-        found_path = None
-        for dirpath, _dirnames, filenames in os.walk(doc_dir):
-            for fn in filenames:
-                if fn == f"{doc_id}.md":
-                    found_path = os.path.join(dirpath, fn)
-                    break
-            if found_path:
-                break
-
+        found_path = _find_doc_path(doc_id)
         if not found_path:
             abort(404)
 
@@ -122,6 +114,55 @@ def create_app(kb_root: str) -> Flask:
             body=body.strip(),
             concepts=concepts,
             related=related_docs,
+        )
+
+    def _find_doc_path(doc_id: str):
+        doc_dir = os.path.join(kb_root, RECORDS_DIR, DOC_DIR)
+        for dirpath, _dirnames, filenames in os.walk(doc_dir):
+            for fn in filenames:
+                if fn == f"{doc_id}.md":
+                    return os.path.join(dirpath, fn)
+        return None
+
+    @app.route("/doc/<doc_id>/edit", methods=["GET", "POST"])
+    def doc_edit(doc_id: str):
+        found_path = _find_doc_path(doc_id)
+        if not found_path:
+            abort(404)
+
+        with open(found_path) as f:
+            text = f.read()
+        meta, body = _parse_front_matter_yaml(text)
+
+        if request.method == "POST":
+            memo = request.form.get("memo", "").strip()
+            rating = request.form.get("rating", "").strip()
+            if memo:
+                meta["memo"] = memo
+            elif "memo" in meta and not memo:
+                del meta["memo"]
+            if rating:
+                try:
+                    meta["rating"] = float(rating)
+                except ValueError:
+                    pass
+            elif "rating" in meta and not rating:
+                del meta["rating"]
+            fm = yaml.dump(
+                meta, allow_unicode=True, default_flow_style=False,
+            )
+            new_text = f"---\n{fm}---\n\n{body}"
+            if not body.endswith("\n"):
+                new_text += "\n"
+            with open(found_path, "w") as f:
+                f.write(new_text)
+            return redirect(url_for("doc_detail", doc_id=doc_id))
+
+        return render_template_string(
+            _EDIT_HTML,
+            doc_id=doc_id,
+            meta=meta,
+            body=body.strip(),
         )
 
     @app.route("/recent")
@@ -602,6 +643,7 @@ h2 {
   <a href="/collections">Collections</a>
 </nav>
 <a class="back" href="/">&larr; Search</a>
+<a class="back" href="/doc/{{ doc_id }}/edit" style="margin-left:1rem;font-size:0.85rem;">Edit</a>
 <h1>{{ meta.get('title', doc_id) }}</h1>
 <div class="meta">
   <span>ID: {{ doc_id }}</span>
@@ -618,6 +660,21 @@ h2 {
   {% for c in concepts %}<a href="/concepts/{{ c }}" class="tag">{{ c }}</a>{% endfor %}
 </div>
 {% endif %}
+{% if meta.get('memo') or meta.get('rating') %}
+<div class="user-notes"
+     style="background:#f8f9fa;padding:0.75rem;border-radius:4px;margin-bottom:1rem;">
+{% if meta.get('rating') %}
+<div style="font-size:0.9rem;">
+  <strong>Rating:</strong> {{ meta.rating }}
+</div>
+{% endif %}
+{% if meta.get('memo') %}
+<div style="font-size:0.9rem;margin-top:0.25rem;">
+  <strong>Memo:</strong> {{ meta.memo }}
+</div>
+{% endif %}
+</div>
+{% endif %}
 <div class="body">{{ body }}</div>
 {% if related %}
 <h2>Related Documents</h2>
@@ -628,6 +685,81 @@ h2 {
 </div>
 {% endfor %}
 {% endif %}
+</body>
+</html>
+"""
+
+_EDIT_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit {{ meta.get('title', doc_id) }} - Knowledge Bucket</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 800px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a;
+}
+h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+nav { margin-bottom: 1rem; font-size: 0.9rem; }
+nav a { color: #2563eb; text-decoration: none; }
+.back { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; }
+.meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+.form-group { margin-bottom: 1rem; }
+.form-group label { display: block; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.95rem; }
+.form-group input, .form-group textarea {
+  width: 100%; padding: 0.5rem; font-size: 0.95rem;
+  border: 1px solid #ccc; border-radius: 4px;
+}
+.form-group textarea { min-height: 120px; resize: vertical; }
+.btn {
+  display: inline-block; padding: 0.5rem 1.2rem;
+  background: #2563eb; color: #fff; border: none; border-radius: 4px;
+  font-size: 1rem; cursor: pointer; text-decoration: none;
+}
+.btn:hover { background: #1d4ed8; }
+.btn-cancel {
+  display: inline-block; margin-left: 0.5rem; padding: 0.5rem 1.2rem;
+  background: #f0f0f0; color: #333; border-radius: 4px;
+  font-size: 1rem; text-decoration: none;
+}
+.btn-cancel:hover { background: #e0e0e0; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">Search</a> &middot;
+  <a href="/recent">Recent</a> &middot;
+  <a href="/categories">Categories</a> &middot;
+  <a href="/concepts">Concepts</a> &middot;
+  <a href="/graph">Graph</a> &middot;
+  <a href="/health">Health</a> &middot;
+  <a href="/collections">Collections</a>
+</nav>
+<a class="back" href="/doc/{{ doc_id }}">&larr; Back to document</a>
+<h1>Edit: {{ meta.get('title', doc_id) }}</h1>
+<div class="meta">
+  <span>ID: {{ doc_id }}</span> &middot;
+  <span>Type: {{ meta.get('source_type', 'web') }}</span>
+</div>
+<form method="post">
+  <div class="form-group">
+    <label for="rating">Rating (0.0 - 1.0)</label>
+    <input type="text" id="rating" name="rating"
+           value="{{ meta.get('rating', '') }}"
+           placeholder="e.g. 0.8">
+  </div>
+  <div class="form-group">
+    <label for="memo">Memo</label>
+    <textarea id="memo" name="memo"
+              placeholder="Add notes or observations...">{{ meta.get('memo', '') }}</textarea>
+  </div>
+  <button type="submit" class="btn">Save</button>
+  <a href="/doc/{{ doc_id }}" class="btn-cancel">Cancel</a>
+</form>
 </body>
 </html>
 """

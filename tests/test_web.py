@@ -570,3 +570,95 @@ class TestSorting:
         html = resp.data.decode()
         assert "Sort by:" in html
         assert html.index("High imp doc") < html.index("Low imp doc")
+
+
+class TestDocEdit:
+    def test_edit_form_renders(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Editable doc", body="Original content.")
+        resp = client.get(f"/doc/{doc_id}/edit")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Edit: Editable doc" in html
+        assert "memo" in html
+        assert "rating" in html
+        assert "Save" in html
+
+    def test_edit_form_not_found(self, client):
+        resp = client.get("/doc/DOESNOTEXIST/edit")
+        assert resp.status_code == 404
+
+    def test_edit_post_saves_memo(self, kb, client):
+        doc_id, rel = _add_doc(kb, title="Memo test", body="Content.")
+        resp = client.post(f"/doc/{doc_id}/edit", data={
+            "memo": "My important note",
+            "rating": "",
+        })
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(f"/doc/{doc_id}")
+
+        # Verify front matter was updated
+        doc_path = os.path.join(kb, "records", "doc", os.path.dirname(rel), f"{doc_id}.md")
+        with open(doc_path) as f:
+            text = f.read()
+        assert "My important note" in text
+        assert "memo:" in text
+        assert "Content." in text
+
+    def test_edit_post_saves_rating(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Rating test", body="Content.")
+        resp = client.post(f"/doc/{doc_id}/edit", data={
+            "memo": "",
+            "rating": "0.85",
+        })
+        assert resp.status_code == 302
+
+        # Check the detail page shows the rating
+        resp2 = client.get(f"/doc/{doc_id}")
+        assert resp2.status_code == 200
+        html = resp2.data.decode()
+        assert "0.85" in html
+
+    def test_edit_post_round_trip(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Round trip", body="Body text.")
+        # Save memo + rating
+        client.post(f"/doc/{doc_id}/edit", data={
+            "memo": "First note",
+            "rating": "0.7",
+        })
+        # Re-open edit form — should show saved values
+        resp = client.get(f"/doc/{doc_id}/edit")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "First note" in html
+        assert "0.7" in html
+
+        # Update memo, clear rating
+        client.post(f"/doc/{doc_id}/edit", data={
+            "memo": "Updated note",
+            "rating": "",
+        })
+        resp2 = client.get(f"/doc/{doc_id}")
+        assert resp2.status_code == 200
+        html2 = resp2.data.decode()
+        assert "Updated note" in html2
+        assert "Rating" not in html2
+
+    def test_doc_detail_shows_edit_link(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Has edit link")
+        resp = client.get(f"/doc/{doc_id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f"/doc/{doc_id}/edit" in html
+        assert "Edit" in html
+
+    def test_edit_invalid_rating_ignored(self, kb, client):
+        doc_id, _ = _add_doc(kb, title="Bad rating")
+        resp = client.post(f"/doc/{doc_id}/edit", data={
+            "memo": "Note",
+            "rating": "not-a-number",
+        })
+        assert resp.status_code == 302
+        # Rating should not be saved
+        resp2 = client.get(f"/doc/{doc_id}")
+        html = resp2.data.decode()
+        assert "not-a-number" not in html
