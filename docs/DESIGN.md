@@ -25,11 +25,11 @@
 |永続ID|ULID（Crockford Base32、26文字）|
 |物理配置|`sha256(id)` によるシャーディング|
 |正本|Markdown + YAML Front Matter|
-|検索|ローカルSQLite FTS5 / TF-IDF vector index|
+|検索|ローカルSQLite FTS5 / TF-IDF / Embedding vector index|
 |グラフ|プログラムで生成（SQLiteに格納）|
 |カテゴリ|物理フォルダではなく仮想ビュー（taxonomy.yml）|
 |Git運用|バッチコミット|
-|Rawデータ|原則Git外。必要ならS3 / R2 / Git LFS|
+|Rawデータ|原則Git外。S3 / R2 / ローカルストレージ対応|
 |実装言語|Python 3.11+、Click CLI|
 |Web UI|Flask + D3.js|
 
@@ -79,6 +79,7 @@ knowledge-bucket/
     analyzer_repo.md     # Gitリポジトリ用
     analyzer_pdf.md      # PDF用
     analyzer_memo.md     # メモ用
+    analyzer_video.md    # 動画用
 
   records/
     doc/
@@ -102,6 +103,8 @@ knowledge-bucket/
       health.py          # グラフ品質メトリクス
       analyzer.py        # LLM分析プロンプト生成・レスポンス解析
       vectors.py         # TF-IDF vector index
+      embeddings.py      # OpenAI / ローカル embedding vector index
+      storage.py         # S3 / R2 / ローカル rawデータ保存
       export.py          # Parquetエクスポート
       concepts.py        # concept note生成・提案
       sync.py            # Git syncパイプライン
@@ -110,6 +113,7 @@ knowledge-bucket/
         paper.py         # arXiv / DOI メタデータ取得
         pdf.py           # PDFテキスト抽出（pypdf）
         repo.py          # GitHub API メタデータ取得
+        video.py         # YouTube メタデータ取得
 
   tests/
     test_cli.py
@@ -127,6 +131,7 @@ knowledge-bucket/
     vectors.npz          # TF-IDF vector index
     inbox/               # 処理待ちファイル
     exports/             # Parquetエクスポート出力先
+    raw/                 # ローカルrawデータ保存先（storage.py）
 ```
 
 `.kb/` はGit管理しない。
@@ -184,12 +189,13 @@ path = records/doc/{shard[0:2]}/{shard[2:4]}/{id}.md
 ---
 id: "01K2Z9P7Y8QWERTY1234567890"
 title: "記事または論文またはリポジトリのタイトル"
-source_type: web          # web | paper | git_repo | memo | pdf
+source_type: web          # web | paper | git_repo | memo | pdf | video
 source_key: "url:https://example.com/article"
 content_hash: "sha256:abc123..."
 created: "2026-06-07T12:00:00+09:00"
 updated: "2026-06-07T12:00:00+09:00"
 source: "https://example.com/article"  # 任意
+raw_ref: "s3://bucket/raw/01K..."      # 任意（--save-raw 時に記録）
 concepts:                               # 任意
   - concept-a
   - concept-b
@@ -222,6 +228,14 @@ repo_stars: 1234
 repo_topics: "rag, knowledge-graph, sqlite"
 ```
 
+動画の場合：
+
+```yaml
+video_id: "dQw4w9WgXcQ"
+video_channel: "Channel Name"
+video_platform: "youtube"
+```
+
 ### 本文セクション（AI生成）
 
 ```markdown
@@ -242,7 +256,7 @@ Markdownに保存するのは **候補概念** まで。実際にどの概念を
 
 ## 7. 入力タイプごとの差分
 
-Web記事、論文、Gitリポジトリ、メモ、PDFは最終的に同じMarkdownになる。違うのは最初の抽出処理だけ。
+Web記事、論文、Gitリポジトリ、メモ、PDF、動画は最終的に同じMarkdownになる。違うのは最初の抽出処理だけ。
 
 |入力|抽出するもの|パーサー|
 |---|---|---|
@@ -250,6 +264,7 @@ Web記事、論文、Gitリポジトリ、メモ、PDFは最終的に同じMarkd
 |論文|タイトル、著者、Abstract、DOI、arXiv ID| `parsers/paper.py`|
 |Gitリポジトリ|README、description、topics、language、stars| `parsers/repo.py`|
 |PDF|テキスト、ページ数、著者| `parsers/pdf.py`（pypdf）|
+|動画|タイトル、概要、チャンネル、再生時間| `parsers/video.py`|
 |メモ|本文、作成日時| ingest内で処理|
 
 Gitリポジトリを保存するときは全コードをコピーしない。README、概要、用途、主要構造、参照URLを保存する。
@@ -292,6 +307,7 @@ prompts/
   analyzer_repo.md     # リポジトリ向け追加指示
   analyzer_pdf.md      # PDF向け追加指示
   analyzer_memo.md     # メモ向け追加指示
+  analyzer_video.md    # 動画向け追加指示
 ```
 
 共通制約：
@@ -553,7 +569,9 @@ kb add <url-or-text>          # inboxに追加（--title, --source, --content, -
 kb ingest                     # inbox内の未処理アイテムを処理
 kb index --sync               # 差分インデックス更新
 kb index --rebuild            # 全件インデックス再構築
-kb search "<query>"           # FTS5検索（--limit, --semantic）
+kb index --verify             # FTSインデックス整合性チェック
+kb index --repair             # 欠損エントリ再構築・ゴミエントリ削除
+kb search "<query>"           # FTS5検索（--limit, --semantic でTF-IDF/Embedding vector検索）
 kb show <doc_id>              # 文書メタデータと本文表示（--full）
 kb related <doc_id>           # 関連文書表示（--limit）
 kb concept <concept_id>       # 概念メタデータ・関連文書・共起概念表示
@@ -567,6 +585,7 @@ kb sync                       # Git同期パイプライン
 kb add-paper <arxiv-or-doi>   # 論文をarXiv URL/ID、DOI、またはタイトルで追加
 kb add-pdf <file>             # PDFをテキスト抽出して追加
 kb add-repo <github-url>      # GitHubリポジトリをメタデータ取得して追加
+kb add-video <url>            # YouTube等の動画をメタデータ取得して追加
 ```
 
 ### グラフ・分析コマンド
@@ -576,14 +595,15 @@ kb graph build                # 概念グラフを構築
 kb concepts suggest           # concept noteの昇格候補を提案・生成
 kb analyze                    # 文書のLLM分析プロンプトを構築
 kb health                     # グラフ品質メトリクス表示（--json）
-kb vectorize                  # TF-IDF vector index構築
+kb vectorize                  # TF-IDF / Embedding vector index構築（--engine tfidf|embedding|openai|local）
 kb collections                # 仮想コレクション一覧表示
 kb serve                      # ローカルWeb UI起動（Flask）
+kb raw <doc_id>               # rawデータの取得・表示（S3/R2/ローカル）
 ```
 
 ### `kb add`
 
-入力を inbox に追加するだけ。この時点ではAI分析しない。即座に終わる。
+`--title`（必須）で新規ドキュメントをrecords/docに直接作成する。`--source`, `--content`, `--type`, `--concepts`, `--save-raw` は任意。content_hashを自動生成する。
 
 ### `kb ingest`
 
