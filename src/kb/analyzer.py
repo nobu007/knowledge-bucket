@@ -8,8 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-
-_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompts")
+from importlib import resources
 
 _SOURCE_TYPE_FILES: dict[str, str] = {
     "web": "analyzer_web.md",
@@ -25,20 +24,17 @@ _BASE_FILE = "analyzer_base.md"
 
 
 def prompts_dir() -> str:
-    return _PROMPTS_DIR
+    """Return filesystem path to bundled prompts directory."""
+    return str(resources.files("kb").joinpath("prompts"))
 
 
 def load_base_prompt() -> str:
-    path = os.path.join(_PROMPTS_DIR, _BASE_FILE)
-    with open(path) as f:
-        return f.read()
+    return resources.files("kb.prompts").joinpath(_BASE_FILE).read_text(encoding="utf-8")
 
 
 def load_prompt(source_type: str) -> str:
     filename = _SOURCE_TYPE_FILES.get(source_type, "analyzer_web.md")
-    path = os.path.join(_PROMPTS_DIR, filename)
-    with open(path) as f:
-        return f.read()
+    return resources.files("kb.prompts").joinpath(filename).read_text(encoding="utf-8")
 
 
 def build_analysis_prompt(source_type: str, title: str, body: str,

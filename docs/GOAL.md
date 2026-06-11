@@ -75,12 +75,12 @@ Phase 10（ツールとデータの分離）を進行中。
 
 現在の `knowledge-bucket/` はツール（`src/kb/`）とデータ（`records/`、`config/`）が同一リポジトリにある。これを分離し、ツールをpip install可能なパッケージにする。
 
-### 10.1 プロンプトのパッケージ内包
+### 10.1 プロンプトのパッケージ内包 ✅
 
-- [ ] `prompts/` を `src/kb/prompts/` に移動し、パッケージデータとして配布可能にする
-- [ ] `pyproject.toml` に `[tool.setuptools.package-data]` で `prompts/*.md` を含める
-- [ ] `analyzer.py` の `_PROMPTS_DIR` を `importlib.resources` ベースに変更（pip install先でも動くように）
-- [ ] テスト: `pip install .` → 別ディレクトリで `kb init /tmp/test-kb && kb analyze` がプロンプトを読み込めること
+- [x] `prompts/` を `src/kb/prompts/` に移動し、パッケージデータとして配布可能にする
+- [x] `pyproject.toml` に `[tool.setuptools.package-data]` で `prompts/*.md` を含める
+- [x] `analyzer.py` の `_PROMPTS_DIR` を `importlib.resources` ベースに変更（pip install先でも動くように）
+- [x] テスト: `pip install .` → 別ディレクトリで `kb init /tmp/test-kb && kb analyze` がプロンプトを読み込めること
 
 **完了基準**: `pip install .` 後に `src/` リポジトリ配下でなく任意のディレクトリからプロンプトがロードできること。
 
