@@ -8,7 +8,12 @@ import sys
 
 import click
 
-from .analyzer import build_analysis_prompt
+from .analyzer import (
+    analyze_document,
+    build_analysis_prompt,
+    find_docs_without_analysis,
+    get_api_key,
+)
 from .concepts import generate_concept_note, suggest_concept_notes
 from .core import (
     CONFIG_DIR,
@@ -156,7 +161,9 @@ updated: {now}
 
 
 @main.command()
-def ingest():
+@click.option("--analyze", "do_analyze", is_flag=True,
+              help="Run LLM analysis on ingested documents")
+def ingest(do_analyze: bool):
     """Process inbox files into records and rebuild the search index."""
     root = kb_root()
     if root is None:
@@ -171,6 +178,23 @@ def ingest():
 
     count = sync_index(root)
     click.echo(f"Ingested {len(ingested)} file(s), indexed {count} new document(s)")
+
+    if do_analyze:
+        api_key = get_api_key()
+        if not api_key:
+            click.echo("Warning: KB_LLM_API_KEY not set, skipping analysis", err=True)
+            return
+        analyzed = 0
+        for ulid in ingested:
+            doc_path = _find_doc_path(root, ulid)
+            if not doc_path:
+                continue
+            try:
+                analyze_document(doc_path, api_key)
+                analyzed += 1
+            except Exception as e:
+                click.echo(f"Analysis failed for {ulid}: {e}", err=True)
+        click.echo(f"Analyzed {analyzed}/{len(ingested)} document(s)")
 
 
 @main.command()
@@ -877,13 +901,39 @@ def collections():
 
 
 @main.command()
-@click.argument("doc_id")
+@click.argument("doc_id", required=False)
 @click.option("--raw-json", is_flag=True, help="Output raw analysis prompt as JSON")
-def analyze(doc_id: str, raw_json: bool):
-    """Build an analysis prompt for DOC_ID. Output is a ready-to-send prompt."""
+@click.option("--retry-failed", is_flag=True,
+              help="Re-analyze documents missing analysis.confidence")
+def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool):
+    """Build an analysis prompt for DOC_ID or retry failed analyses."""
     root = kb_root()
     if root is None:
         click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    if retry_failed:
+        api_key = get_api_key()
+        if not api_key:
+            click.echo("Error: KB_LLM_API_KEY not set", err=True)
+            raise SystemExit(1)
+        docs = find_docs_without_analysis(root)
+        if not docs:
+            click.echo("No documents need re-analysis")
+            return
+        analyzed = 0
+        for ulid, doc_path in docs:
+            try:
+                analyze_document(doc_path, api_key)
+                analyzed += 1
+                click.echo(f"Analyzed: {ulid}")
+            except Exception as e:
+                click.echo(f"Failed: {ulid}: {e}", err=True)
+        click.echo(f"Re-analyzed {analyzed}/{len(docs)} document(s)")
+        return
+
+    if not doc_id:
+        click.echo("Error: DOC_ID is required (or use --retry-failed)", err=True)
         raise SystemExit(1)
 
     # Find the document by scanning records/doc/
@@ -1100,3 +1150,13 @@ def serve(host: str, port: int, debug: bool):
 
 if __name__ == "__main__":
     main()
+
+
+def _find_doc_path(root: str, ulid: str) -> str | None:
+    """Resolve ULID to absolute document path."""
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if fn == f"{ulid}.md":
+                return os.path.join(dirpath, fn)
+    return None

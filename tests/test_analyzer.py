@@ -1,15 +1,22 @@
 """Tests for analyzer module: prompt loading, request building, response parsing."""
 
 import json
+import os
+import tempfile
+from unittest.mock import patch
 
 import pytest
 
 from kb.analyzer import (
     AnalysisResult,
     ConceptRef,
+    apply_analysis_to_doc,
     build_analysis_prompt,
     build_front_matter_update,
+    call_llm_api,
+    find_docs_without_analysis,
     format_body_for_analysis,
+    get_api_key,
     load_base_prompt,
     load_prompt,
     parse_analysis_response,
@@ -213,3 +220,137 @@ class TestBuildFrontMatterUpdate:
         assert len(fm["concepts"]["candidates"]) == 1
         assert fm["concepts"]["candidates"][0]["weight"] == 0.5
         assert fm["tags_display"] == ["AI", "NLP"]
+        assert fm["summary"] == ""
+
+
+class TestCallLlmApi:
+    def test_successful_call(self):
+        mock_resp = json.dumps({
+            "choices": [{"message": {"content": '{"title": "Test"}'}}],
+        }).encode()
+
+        with patch("kb.analyzer.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__ = lambda s: s
+            mock_urlopen.return_value.__exit__ = lambda s, *a: None
+            mock_urlopen.return_value.read.return_value = mock_resp
+            result = call_llm_api("test prompt", "fake-key")
+        assert result == '{"title": "Test"}'
+
+    def test_retry_on_429(self):
+        import urllib.error
+
+        error_429 = urllib.error.HTTPError(
+            "url", 429, "Too Many Requests", {}, None,
+        )
+        mock_data = json.dumps({
+            "choices": [{"message": {"content": '{"title": "OK"}'}}],
+        }).encode()
+
+        call_count = 0
+
+        class MockResp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def read(self):
+                return mock_data
+
+        def side_effect(req, timeout=60):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise error_429
+            return MockResp()
+
+        with patch("kb.analyzer.urllib.request.urlopen", side_effect=side_effect):
+            with patch("kb.analyzer.time.sleep"):
+                result = call_llm_api("test prompt", "fake-key")
+        assert result == '{"title": "OK"}'
+
+    def test_raises_on_non_429_error(self):
+        import urllib.error
+
+        error_500 = urllib.error.HTTPError(
+            "url", 500, "Internal Server Error", {}, None,
+        )
+
+        with patch("kb.analyzer.urllib.request.urlopen", side_effect=error_500):
+            with pytest.raises(urllib.error.HTTPError):
+                call_llm_api("test prompt", "fake-key")
+
+
+class TestGetApiKey:
+    def test_returns_key(self):
+        with patch.dict(os.environ, {"KB_LLM_API_KEY": "test-key"}):
+            assert get_api_key() == "test-key"
+
+    def test_returns_none_when_unset(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = get_api_key()
+            assert result is None
+
+
+class TestApplyAnalysisToDoc:
+    def test_writes_analysis_to_front_matter(self):
+        analysis = AnalysisResult(
+            summary="A test summary",
+            primary_concepts=[ConceptRef(id="rag", label="RAG")],
+            confidence=0.85,
+            importance=0.7,
+            display_tags=["AI"],
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("---\nid: 01K2Z9P7Y8QWERTY1234567890\n")
+            f.write("title: Test Doc\nsource_type: web\n---\n\nBody text here.\n")
+            path = f.name
+        try:
+            apply_analysis_to_doc(path, analysis)
+            with open(path) as f:
+                text = f.read()
+            assert "summary: A test summary" in text
+            assert "analysis:" in text
+            assert "confidence: 0.85" in text
+            assert "importance: 0.7" in text
+            assert "concept:rag" in text
+            assert "tags_display:" in text
+            assert "Body text here." in text
+        finally:
+            os.unlink(path)
+
+
+class TestFindDocsWithoutAnalysis:
+    def test_finds_unanalyzed_docs(self):
+        from kb.core import DOC_DIR, RECORDS_DIR, ensure_dirs, generate_ulid, shard_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            # Create unanalyzed doc
+            ulid = generate_ulid()
+            rel = shard_path(ulid)
+            abs_dir = os.path.join(tmp, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
+            os.makedirs(abs_dir, exist_ok=True)
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, rel)
+            with open(doc_path, "w") as f:
+                f.write(f"---\nid: {ulid}\ntitle: Test\n---\n\nBody\n")
+
+            results = find_docs_without_analysis(tmp)
+            assert len(results) == 1
+            assert results[0][0] == ulid
+
+    def test_skips_analyzed_docs(self):
+        from kb.core import DOC_DIR, RECORDS_DIR, ensure_dirs, generate_ulid, shard_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            ulid = generate_ulid()
+            rel = shard_path(ulid)
+            abs_dir = os.path.join(tmp, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
+            os.makedirs(abs_dir, exist_ok=True)
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, rel)
+            with open(doc_path, "w") as f:
+                f.write(f"---\nid: {ulid}\ntitle: Test\n---\n\n")
+                f.write("analysis:\n  confidence: 0.9\n  importance: 0.8\n")
+
+            results = find_docs_without_analysis(tmp)
+            assert len(results) == 0
