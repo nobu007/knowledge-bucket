@@ -477,3 +477,96 @@ class TestPagination:
         html2 = resp2.data.decode()
         assert "Page 2 of" in html2
         assert "Prev" in html2
+
+
+class TestSorting:
+    def test_recent_sort_by_date(self, kb, client):
+        d1, _ = _add_doc(kb, title="First doc")
+        d2, _ = _add_doc(kb, title="Second doc")
+        _index_doc(kb, d1, "First doc")
+        _index_doc(kb, d2, "Second doc")
+
+        resp = client.get("/recent?sort=date")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Sort by:" in html
+        # Default sort is date (by ULID DESC), second doc appears first
+        assert html.index("Second doc") < html.index("First doc")
+
+    def test_recent_sort_by_importance(self, kb, client):
+        d1, _ = _add_doc(kb, title="Low importance")
+        d2, _ = _add_doc(kb, title="High importance")
+        _index_doc(kb, d1, "Low importance")
+        _index_doc(kb, d2, "High importance")
+        _setup_graph(kb, d1, source_type="web")
+        _setup_graph(kb, d2, source_type="web")
+
+        # Set different importance values
+        from kb.index import index_path
+        db = index_path(kb)
+        conn = init_db(db)
+        conn.execute("UPDATE doc_stats SET importance = 0.2 WHERE doc_id = ?", (d1,))
+        conn.execute("UPDATE doc_stats SET importance = 0.9 WHERE doc_id = ?", (d2,))
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/recent?sort=importance")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert html.index("High importance") < html.index("Low importance")
+        assert "importance:" in html
+
+    def test_recent_sort_by_type(self, kb, client):
+        d1, _ = _add_doc(kb, title="Web doc", source_type="web")
+        d2, _ = _add_doc(kb, title="Paper doc", source_type="paper")
+        _index_doc(kb, d1, "Web doc", source_type="web")
+        _index_doc(kb, d2, "Paper doc", source_type="paper")
+
+        resp = client.get("/recent?sort=type")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # "paper" comes before "web" alphabetically
+        assert html.index("Paper doc") < html.index("Web doc")
+
+    def test_recent_sort_default_is_date(self, kb, client):
+        d1, _ = _add_doc(kb, title="First doc")
+        d2, _ = _add_doc(kb, title="Second doc")
+        _index_doc(kb, d1, "First doc")
+        _index_doc(kb, d2, "Second doc")
+
+        resp = client.get("/recent")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Without sort param, defaults to date (ULID DESC)
+        assert html.index("Second doc") < html.index("First doc")
+
+    def test_recent_sort_invalid_ignored(self, kb, client):
+        d, _ = _add_doc(kb, title="Doc")
+        _index_doc(kb, d, "Doc")
+
+        resp = client.get("/recent?sort=invalid")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Doc" in html
+
+    def test_homepage_sort_by_importance(self, kb, client):
+        d1, _ = _add_doc(kb, title="Low imp doc")
+        d2, _ = _add_doc(kb, title="High imp doc")
+        _index_doc(kb, d1, "Low imp doc")
+        _index_doc(kb, d2, "High imp doc")
+        _setup_graph(kb, d1, source_type="web")
+        _setup_graph(kb, d2, source_type="web")
+
+        from kb.index import index_path
+        db = index_path(kb)
+        conn = init_db(db)
+        conn.execute("UPDATE doc_stats SET importance = 0.1 WHERE doc_id = ?", (d1,))
+        conn.execute("UPDATE doc_stats SET importance = 0.8 WHERE doc_id = ?", (d2,))
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/?sort=importance")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Sort by:" in html
+        assert html.index("High imp doc") < html.index("Low imp doc")

@@ -19,6 +19,14 @@ from .related import find_cooccurring_concepts, find_related
 _VALID_SOURCE_TYPES = {"web", "paper", "pdf", "git_repo", "repo", "video", "memo"}
 
 
+def _sort_order(sort: str) -> str:
+    if sort == "importance":
+        return "COALESCE(ds.importance, 0.0) DESC, d.id DESC"
+    if sort == "type":
+        return "d.source_type ASC, d.id DESC"
+    return "d.id DESC"
+
+
 def create_app(kb_root: str) -> Flask:
     app = Flask(__name__)
     app.config["KB_ROOT"] = kb_root
@@ -27,6 +35,9 @@ def create_app(kb_root: str) -> Flask:
     def index_page():
         q = request.args.get("q", "").strip()
         page = request.args.get("page", 1, type=int)
+        sort = request.args.get("sort", "date")
+        if sort not in ("date", "importance", "type"):
+            sort = "date"
         per_page = 20
         results = []
         recent = []
@@ -46,14 +57,18 @@ def create_app(kb_root: str) -> Flask:
             if os.path.exists(db_file):
                 conn = sqlite3.connect(db_file)
                 try:
+                    init_graph_tables(conn)
+                    order = _sort_order(sort)
                     rows = conn.execute(
-                        "SELECT id, title, source, source_type FROM docs "
-                        "ORDER BY id DESC LIMIT ? OFFSET ?",
+                        f"SELECT d.id, d.title, d.source, d.source_type, "
+                        f"COALESCE(ds.importance, 0.0) "
+                        f"FROM docs d LEFT JOIN doc_stats ds ON ds.doc_id = d.id "
+                        f"ORDER BY {order} LIMIT ? OFFSET ?",
                         (per_page, (page - 1) * per_page),
                     ).fetchall()
                     recent = [
                         {"id": r[0], "title": r[1], "source": r[2],
-                         "source_type": r[3]}
+                         "source_type": r[3], "importance": r[4]}
                         for r in rows
                     ]
                     total = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
@@ -65,6 +80,7 @@ def create_app(kb_root: str) -> Flask:
         return render_template_string(
             _INDEX_HTML, query=q, results=results, recent=recent,
             page=page, total_pages=total_pages, has_prev=has_prev, has_next=has_next,
+            sort=sort,
         )
 
     @app.route("/doc/<doc_id>")
@@ -111,6 +127,9 @@ def create_app(kb_root: str) -> Flask:
     @app.route("/recent")
     def recent_page():
         page = request.args.get("page", 1, type=int)
+        sort = request.args.get("sort", "date")
+        if sort not in ("date", "importance", "type"):
+            sort = "date"
         per_page = 20
         offset = (page - 1) * per_page
         docs = []
@@ -119,15 +138,19 @@ def create_app(kb_root: str) -> Flask:
         if os.path.exists(db):
             conn = sqlite3.connect(db)
             try:
+                init_graph_tables(conn)
                 total = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+                order = _sort_order(sort)
                 rows = conn.execute(
-                    "SELECT id, title, source, source_type FROM docs "
-                    "ORDER BY id DESC LIMIT ? OFFSET ?",
+                    f"SELECT d.id, d.title, d.source, d.source_type, "
+                    f"COALESCE(ds.importance, 0.0) "
+                    f"FROM docs d LEFT JOIN doc_stats ds ON ds.doc_id = d.id "
+                    f"ORDER BY {order} LIMIT ? OFFSET ?",
                     (per_page, offset),
                 ).fetchall()
                 docs = [
                     {"id": r[0], "title": r[1], "source": r[2],
-                     "source_type": r[3]}
+                     "source_type": r[3], "importance": r[4]}
                     for r in rows
                 ]
             finally:
@@ -138,6 +161,7 @@ def create_app(kb_root: str) -> Flask:
         return render_template_string(
             _RECENT_HTML, docs=docs, page=page,
             total_pages=total_pages, has_prev=has_prev, has_next=has_next,
+            sort=sort,
         )
 
     @app.route("/api/recent")
@@ -481,6 +505,15 @@ input[type=text] {
 {% endfor %}
 {% if not query and recent %}
 <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">Recent Documents</h2>
+<div style="margin-bottom:0.5rem;font-size:0.9rem;">
+  Sort by:
+  <a href="/?sort=date{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'date' %}style="font-weight:bold;"{% endif %}>Date</a> &middot;
+  <a href="/?sort=importance{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'importance' %}style="font-weight:bold;"{% endif %}>Importance</a> &middot;
+  <a href="/?sort=type{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'type' %}style="font-weight:bold;"{% endif %}>Type</a>
+</div>
 {% for r in recent %}
 <div class="result">
   <div class="result-title">
@@ -489,6 +522,9 @@ input[type=text] {
   <div class="result-meta">
     {{ r.source_type }}
     {%- if r.source %} &middot; {{ r.source }}{% endif %}
+    {%- if sort == 'importance' %}
+      &middot; importance: {{ "%.2f"|format(r.importance) }}
+    {%- endif %}
   </div>
 </div>
 {% endfor %}
@@ -499,12 +535,16 @@ input[type=text] {
 {% if total_pages > 1 %}
 <div style="margin-top:1.5rem;display:flex;gap:0.5rem;align-items:center;">
   {% if has_prev %}
-  <a href="/?{% if query %}q={{ query }}&amp;{% endif %}page={{ page - 1 }}"
+  <a href="/?{% if query %}q={{ query }}&amp;{%- endif -%}
+    {%- if not query and sort != 'date' %}sort={{ sort }}&amp;{%- endif -%}
+    page={{ page - 1 }}"
      class="page-link">&laquo; Prev</a>
   {% endif %}
   <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
   {% if has_next %}
-  <a href="/?{% if query %}q={{ query }}&amp;{% endif %}page={{ page + 1 }}"
+  <a href="/?{% if query %}q={{ query }}&amp;{%- endif -%}
+    {%- if not query and sort != 'date' %}sort={{ sort }}&amp;{%- endif -%}
+    page={{ page + 1 }}"
      class="page-link">Next &raquo;</a>
   {% endif %}
 </div>
@@ -624,6 +664,15 @@ nav a { color: #2563eb; text-decoration: none; }
 </head>
 <body>
 <h1>Recent Documents</h1>
+<div style="margin-bottom:1rem;font-size:0.9rem;">
+  Sort by:
+  <a href="/recent?sort=date{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'date' %}style="font-weight:bold;"{% endif %}>Date</a> &middot;
+  <a href="/recent?sort=importance{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'importance' %}style="font-weight:bold;"{% endif %}>Importance</a> &middot;
+  <a href="/recent?sort=type{% if page > 1 %}&amp;page={{ page }}{% endif %}"
+     {% if sort == 'type' %}style="font-weight:bold;"{% endif %}>Type</a>
+</div>
 <nav>
   <a href="/">Search</a> &middot;
   <a href="/recent">Recent</a> &middot;
@@ -642,17 +691,20 @@ nav a { color: #2563eb; text-decoration: none; }
   <div class="meta">
     {{ d.source_type }}
     {%- if d.source %} &middot; {{ d.source }}{% endif %}
+    {%- if sort == 'importance' %}
+      &middot; importance: {{ "%.2f"|format(d.importance) }}
+    {%- endif %}
   </div>
 </div>
 {% endfor %}
 {% if total_pages > 1 %}
 <div class="pagination" style="margin-top:1.5rem;display:flex;gap:0.5rem;align-items:center;">
   {% if has_prev %}
-  <a href="/recent?page={{ page - 1 }}" class="page-link">&laquo; Prev</a>
+  <a href="/recent?page={{ page - 1 }}&amp;sort={{ sort }}" class="page-link">&laquo; Prev</a>
   {% endif %}
   <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
   {% if has_next %}
-  <a href="/recent?page={{ page + 1 }}" class="page-link">Next &raquo;</a>
+  <a href="/recent?page={{ page + 1 }}&amp;sort={{ sort }}" class="page-link">Next &raquo;</a>
   {% endif %}
 </div>
 {% endif %}
