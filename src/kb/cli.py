@@ -24,7 +24,7 @@ from .core import (
     kb_root,
     shard_path,
 )
-from .dedup import generate_source_key
+from .dedup import compute_content_hash, generate_source_key
 from .embeddings import build_embeddings, embedding_search
 from .export import export_parquet
 from .graph import build_graph, load_taxonomy, resolve_virtual_collection
@@ -117,12 +117,15 @@ def add(title: str, source: str | None, content: str | None, doc_type: str,
     if do_save_raw and content:
         raw_ref = save_raw(root, ulid, content.encode())
 
+    content_hash = compute_content_hash(content)
+
     front_matter = f"""\
 ---
 id: {ulid}
 title: {title}
 source_type: {doc_type}
 source_key: {generate_source_key(doc_type, source_url=source, title=title, doc_ulid=ulid)}
+content_hash: sha256:{content_hash}
 created: {now}
 updated: {now}
 """
