@@ -2,11 +2,34 @@
 
 Web記事、GitHubリポジトリ、論文、メモ、PDF、動画をGitに蓄積し、FTS5検索・概念グラフ・Embeddingベクトル検索で再利用するローカル知識管理システム。
 
-## セットアップ
+## インストール
 
 ```bash
+# PyPI (when published)
+pip install kb-tools
+
+# GitHub から直接
+pip install git+https://github.com/user/knowledge-bucket.git
+
+# 開発モード（リポジトリをcloneしている場合）
 pip install -e ".[dev]"
-kb init
+```
+
+## クイックスタート
+
+```bash
+# データ用ディレクトリを初期化
+kb init ~/my-knowledge
+
+# 文書を追加
+cd ~/my-knowledge
+kb add --title "test" --content "hello"
+
+# インデックス構築
+kb index --sync
+
+# 検索
+kb search "hello"
 ```
 
 ## CLIコマンド

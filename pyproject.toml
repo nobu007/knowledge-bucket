@@ -1,7 +1,7 @@
 [project]
-name = "knowledge-bucket"
+name = "kb-tools"
 version = "0.1.0"
-description = "Git-backed knowledge management with ULID IDs and hash-sharded paths"
+description = "Git-backed knowledge management CLI — add, index, search, and analyze documents locally"
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
