@@ -3,12 +3,27 @@ name = "kb-tools"
 version = "0.1.0"
 description = "Git-backed knowledge management CLI — add, index, search, and analyze documents locally"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "nobu007" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = [
     "click>=8.0",
     "flask>=3.0",
     "pypdf>=4.0",
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/nobu007/knowledge-bucket"
 
 [project.optional-dependencies]
 dev = [

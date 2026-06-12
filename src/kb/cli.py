@@ -42,6 +42,7 @@ from .vectors import build_vectors, semantic_search
 
 
 @click.group()
+@click.version_option(package_name="kb-tools")
 def main():
     """Knowledge Bucket - Git-backed knowledge management."""
 
