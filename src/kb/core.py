@@ -127,6 +127,29 @@ def shard_path(ulid: str, depth: int = 2) -> str:
     return os.path.join(*parts, f"{ulid}.md")
 
 
+def yaml_scalar(value: str) -> str:
+    """Render a string as a YAML-safe scalar.
+
+    Quotes values that would break unquoted YAML. The real breaker is a
+    ``: `` (colon-space) sequence or a value that looks like another mapping
+    key; URLs like ``https://x`` are safe unquoted and stay that way.
+    """
+    if value is None:
+        return "null"
+    s = str(value)
+    needs_quote = (
+        not s
+        or ": " in s
+        or s.endswith(":")
+        or s[0] in "-?{\"'[]{}#&*!|>%@`,"
+        or s.endswith(" ")
+        or "\n" in s
+    )
+    if needs_quote:
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
 def kb_root() -> str | None:
     """Find the knowledge bucket root by walking up from cwd looking for config/kb.yml."""
     cur = os.path.realpath(os.getcwd())

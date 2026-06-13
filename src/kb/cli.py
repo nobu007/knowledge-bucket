@@ -28,6 +28,7 @@ from .core import (
     generate_ulid,
     kb_root,
     shard_path,
+    yaml_scalar,
 )
 from .dedup import compute_content_hash, generate_source_key
 from .embeddings import build_embeddings, embedding_search
@@ -127,7 +128,7 @@ def add(title: str, source: str | None, content: str | None, doc_type: str,
     front_matter = f"""\
 ---
 id: {ulid}
-title: {title}
+title: {yaml_scalar(title)}
 source_type: {doc_type}
 source_key: {generate_source_key(doc_type, source_url=source, title=title, doc_ulid=ulid)}
 content_hash: sha256:{content_hash}
@@ -180,9 +181,9 @@ def ingest(do_analyze: bool):
     click.echo(f"Ingested {len(ingested)} file(s), indexed {count} new document(s)")
 
     if do_analyze:
-        api_key = get_api_key()
-        if not api_key:
-            click.echo("Warning: KB_LLM_API_KEY not set, skipping analysis", err=True)
+        if not get_api_key():
+            click.echo("Warning: ai-hub-agent-proxy not found (set KB_AGENT_PROXY), "
+                       "skipping analysis", err=True)
             return
         analyzed = 0
         for ulid in ingested:
@@ -190,7 +191,7 @@ def ingest(do_analyze: bool):
             if not doc_path:
                 continue
             try:
-                analyze_document(doc_path, api_key)
+                analyze_document(doc_path)
                 analyzed += 1
             except Exception as e:
                 click.echo(f"Analysis failed for {ulid}: {e}", err=True)
@@ -503,7 +504,7 @@ def add_paper(paper_ref: str, content: str | None):
     front_matter = f"""\
 ---
 id: {ulid}
-title: {paper_data['title']}
+title: {yaml_scalar(paper_data['title'])}
 source_type: {paper_data['source_type']}
 source_key: {paper_skey}
 created: {now}
@@ -533,7 +534,7 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
-    click.echo(f"  title: {paper_data['title']}")
+    click.echo(f"  title: {yaml_scalar(paper_data['title'])}")
 
 
 @main.command("add-pdf")
@@ -577,7 +578,7 @@ def add_pdf(pdf_path: str, source: str | None, content: str | None):
     front_matter = f"""\
 ---
 id: {ulid}
-title: {pdf_data['title']}
+title: {yaml_scalar(pdf_data['title'])}
 source_type: {pdf_data['source_type']}
 source_key: {pdf_skey}
 created: {now}
@@ -601,7 +602,7 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
-    click.echo(f"  title: {pdf_data['title']}")
+    click.echo(f"  title: {yaml_scalar(pdf_data['title'])}")
     click.echo(f"  pages: {meta.get('page_count', '?')}")
 
 
@@ -639,7 +640,7 @@ def add_repo(url: str):
     front_matter = f"""\
 ---
 id: {ulid}
-title: {repo_data['title']}
+title: {yaml_scalar(repo_data['title'])}
 source_type: {repo_data['source_type']}
 source_key: {repo_skey}
 created: {now}
@@ -666,7 +667,7 @@ source: {repo_data['source_url']}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
-    click.echo(f"  title: {repo_data['title']}")
+    click.echo(f"  title: {yaml_scalar(repo_data['title'])}")
 
 
 @main.command("add-video")
@@ -704,7 +705,7 @@ def add_video(url: str, content: str | None):
     front_matter = f"""\
 ---
 id: {ulid}
-title: {video_data['title']}
+title: {yaml_scalar(video_data['title'])}
 source_type: {video_data['source_type']}
 source_key: {video_skey}
 created: {now}
@@ -729,7 +730,7 @@ source: {video_data['source_url']}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
-    click.echo(f"  title: {video_data['title']}")
+    click.echo(f"  title: {yaml_scalar(video_data['title'])}")
 
 
 @main.command()
@@ -913,9 +914,8 @@ def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool):
         raise SystemExit(1)
 
     if retry_failed:
-        api_key = get_api_key()
-        if not api_key:
-            click.echo("Error: KB_LLM_API_KEY not set", err=True)
+        if not get_api_key():
+            click.echo("Error: ai-hub-agent-proxy not found (set KB_AGENT_PROXY)", err=True)
             raise SystemExit(1)
         docs = find_docs_without_analysis(root)
         if not docs:
@@ -924,7 +924,7 @@ def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool):
         analyzed = 0
         for ulid, doc_path in docs:
             try:
-                analyze_document(doc_path, api_key)
+                analyze_document(doc_path)
                 analyzed += 1
                 click.echo(f"Analyzed: {ulid}")
             except Exception as e:

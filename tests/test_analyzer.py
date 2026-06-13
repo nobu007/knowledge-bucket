@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
@@ -10,10 +11,11 @@ import pytest
 from kb.analyzer import (
     AnalysisResult,
     ConceptRef,
+    agent_proxy_bin,
     apply_analysis_to_doc,
     build_analysis_prompt,
     build_front_matter_update,
-    call_llm_api,
+    call_agent,
     find_docs_without_analysis,
     format_body_for_analysis,
     get_api_key,
@@ -223,72 +225,80 @@ class TestBuildFrontMatterUpdate:
         assert fm["summary"] == ""
 
 
-class TestCallLlmApi:
+class TestCallAgent:
     def test_successful_call(self):
-        mock_resp = json.dumps({
-            "choices": [{"message": {"content": '{"title": "Test"}'}}],
-        }).encode()
-
-        with patch("kb.analyzer.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value.__enter__ = lambda s: s
-            mock_urlopen.return_value.__exit__ = lambda s, *a: None
-            mock_urlopen.return_value.read.return_value = mock_resp
-            result = call_llm_api("test prompt", "fake-key")
+        completed = CompletedProcess(
+            args=[], returncode=0, stdout='{"title": "Test"}', stderr="",
+        )
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"), \
+             patch("kb.analyzer.shutil.which", return_value="/usr/bin/node"), \
+             patch("kb.analyzer.subprocess.run", return_value=completed):
+            result = call_agent("test prompt")
         assert result == '{"title": "Test"}'
 
-    def test_retry_on_429(self):
-        import urllib.error
-
-        error_429 = urllib.error.HTTPError(
-            "url", 429, "Too Many Requests", {}, None,
-        )
-        mock_data = json.dumps({
-            "choices": [{"message": {"content": '{"title": "OK"}'}}],
-        }).encode()
-
-        call_count = 0
-
-        class MockResp:
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                pass
-            def read(self):
-                return mock_data
-
-        def side_effect(req, timeout=60):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise error_429
-            return MockResp()
-
-        with patch("kb.analyzer.urllib.request.urlopen", side_effect=side_effect):
-            with patch("kb.analyzer.time.sleep"):
-                result = call_llm_api("test prompt", "fake-key")
+    def test_retries_on_transient_exit_code(self):
+        transient = CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        ok = CompletedProcess(args=[], returncode=0, stdout='{"title": "OK"}', stderr="")
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"), \
+             patch("kb.analyzer.shutil.which", return_value="/usr/bin/node"), \
+             patch("kb.analyzer.subprocess.run", side_effect=[transient, ok]):
+            result = call_agent("test prompt")
         assert result == '{"title": "OK"}'
 
-    def test_raises_on_non_429_error(self):
-        import urllib.error
+    def test_raises_on_fatal_exit_code(self):
+        fatal = CompletedProcess(args=[], returncode=127, stdout="", stderr="not found")
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"), \
+             patch("kb.analyzer.shutil.which", return_value="/usr/bin/node"), \
+             patch("kb.analyzer.subprocess.run", return_value=fatal):
+            with pytest.raises(RuntimeError, match="rc=127"):
+                call_agent("test prompt")
 
-        error_500 = urllib.error.HTTPError(
-            "url", 500, "Internal Server Error", {}, None,
-        )
+    def test_raises_when_proxy_missing(self):
+        with patch("kb.analyzer.agent_proxy_bin", return_value=None):
+            with pytest.raises(RuntimeError, match="not found"):
+                call_agent("test prompt")
 
-        with patch("kb.analyzer.urllib.request.urlopen", side_effect=error_500):
-            with pytest.raises(urllib.error.HTTPError):
-                call_llm_api("test prompt", "fake-key")
+    def test_timeout_does_not_retry(self):
+        import subprocess
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"), \
+             patch("kb.analyzer.shutil.which", return_value="/usr/bin/node"), \
+             patch("kb.analyzer.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=1)):
+            with pytest.raises(RuntimeError, match="timed out"):
+                call_agent("test prompt", timeout_sec=1)
+
+    def test_passes_timeout_flag_to_proxy(self):
+        completed = CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"), \
+             patch("kb.analyzer.shutil.which", return_value="/usr/bin/node") as _w, \
+             patch("kb.analyzer.subprocess.run", return_value=completed) as mock_run:
+            call_agent("p", timeout_sec=120)
+        cmd = mock_run.call_args.args[0]
+        assert "--timeout" in cmd
+        assert "120" in cmd
 
 
 class TestGetApiKey:
-    def test_returns_key(self):
-        with patch.dict(os.environ, {"KB_LLM_API_KEY": "test-key"}):
-            assert get_api_key() == "test-key"
+    def test_returns_proxy_path_when_available(self):
+        with patch("kb.analyzer.agent_proxy_bin", return_value="/fake/proxy.js"):
+            assert get_api_key() == "/fake/proxy.js"
 
-    def test_returns_none_when_unset(self):
-        with patch.dict(os.environ, {}, clear=True):
-            result = get_api_key()
-            assert result is None
+    def test_returns_none_when_proxy_missing(self):
+        with patch("kb.analyzer.agent_proxy_bin", return_value=None):
+            assert get_api_key() is None
+
+
+class TestAgentProxyBin:
+    def test_env_var_takes_precedence(self, tmp_path):
+        proxy = tmp_path / "cli.js"
+        proxy.write_text("#!/usr/bin/env node")
+        with patch.dict(os.environ, {"KB_AGENT_PROXY": str(proxy)}):
+            assert agent_proxy_bin() == str(proxy)
+
+    def test_returns_none_when_unset_and_not_found(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("kb.analyzer._PROXY_CANDIDATES", []):
+            assert agent_proxy_bin() is None
 
 
 class TestApplyAnalysisToDoc:

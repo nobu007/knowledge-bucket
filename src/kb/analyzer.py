@@ -1,12 +1,16 @@
-"""Analyzer framework: prompt loading, analysis request building, response parsing."""
+"""Analyzer framework: prompt loading, analysis request building, response parsing.
+
+LLM calls go through ai-hub-agent-proxy (Claude Code primary, OpenCode fallback)
+via subprocess — NOT a raw chat-completions API. Configure the proxy path with
+the KB_AGENT_PROXY env var; otherwise it is auto-detected from common locations.
+"""
 
 import json
 import logging
 import os
 import re
-import time
-import urllib.error
-import urllib.request
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from importlib import resources
 
@@ -126,8 +130,39 @@ def _parse_entity_list(items: list[dict]) -> list[EntityRef]:
     return result
 
 
+def _extract_json(text: str) -> str:
+    """Extract a JSON object from text that may be wrapped in markdown fences
+    or have preamble/trailing text. Returns the raw JSON substring."""
+    s = text.strip()
+
+    # Strip markdown code fences: ```json\n...\n``` or ```\n...\n```
+    fence = re.search(r"```(?:json)?\s*\n?(.*?)```", s, re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+
+    # If it still has surrounding text, grab the outermost {...} block.
+    if not s.startswith("{"):
+        start = s.find("{")
+        if start == -1:
+            return s  # let json.loads raise a clear error
+        # find matching closing brace by depth counting
+        depth = 0
+        end = -1
+        for i in range(start, len(s)):
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            s = s[start:end + 1]
+    return s
+
+
 def parse_analysis_response(json_str: str) -> AnalysisResult:
-    data = json.loads(json_str)
+    data = json.loads(_extract_json(json_str))
     return AnalysisResult(
         title=data.get("title", ""),
         summary=data.get("summary", ""),
@@ -172,44 +207,85 @@ def build_front_matter_update(analysis: AnalysisResult, ulid: str,
 
 logger = logging.getLogger(__name__)
 
-_LLM_BASE_URL = os.environ.get("KB_LLM_BASE_URL", "https://api.openai.com/v1")
-_LLM_MODEL = os.environ.get("KB_LLM_MODEL", "gpt-4o-mini")
-_API_CALL_INTERVAL = 0.5
+_AGENT_PROXY_ENV = "KB_AGENT_PROXY"
+_PROXY_CANDIDATES = [
+    os.path.expanduser("~/ai-hub_agent_proxy/dist/cli.js"),
+    "/opt/ai-hub_agent_proxy/dist/cli.js",
+]
 _MAX_RETRIES = 3
+_RETRY_EXIT_CODES = {1, 2}  # transient backend failures eligible for retry
+
+
+def agent_proxy_bin() -> str | None:
+    """Return path to ai-hub-agent-proxy dist/cli.js, or None if unavailable."""
+    path = os.environ.get(_AGENT_PROXY_ENV)
+    if path and os.path.isfile(path):
+        return path
+    for cand in _PROXY_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 
 def get_api_key() -> str | None:
-    return os.environ.get("KB_LLM_API_KEY")
+    """Backward-compat: returns a truthy marker when the agent proxy is available.
+
+    The analyzer no longer uses API keys — it delegates to ai-hub-agent-proxy,
+    which owns its own backend credentials. We keep this name so callers and the
+    CLI can still gate on "is analysis available" without a sweeping rename.
+    """
+    return agent_proxy_bin()
 
 
-def call_llm_api(prompt: str, api_key: str) -> str:
-    """Call LLM chat completions API and return the assistant message content."""
-    url = f"{_LLM_BASE_URL}/chat/completions"
-    payload = json.dumps({
-        "model": _LLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-    }).encode()
-    req = urllib.request.Request(
-        url, data=payload, headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
+def call_agent(prompt: str, *, timeout_sec: int = 3600) -> str:
+    """Run the analysis prompt through ai-hub-agent-proxy and return stdout.
+
+    Spawns `node <proxy>/dist/cli.js --quiet --timeout N -p <prompt>`. The proxy
+    runs Claude Code (primary) with OpenCode fallback; secrets stay in the
+    proxy's own .env. Default 1h timeout — LLM analysis of large documents can
+    take many minutes. Retries on transient exit codes.
+    """
+    proxy = agent_proxy_bin()
+    if not proxy:
+        raise RuntimeError(
+            "ai-hub-agent-proxy not found. Set KB_AGENT_PROXY to dist/cli.js."
+        )
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("node executable not found on PATH")
+
+    # Give the proxy itself the same budget so its own SIGTERM grace window
+    # aligns with our subprocess timeout. subprocess timeout is +60s headroom.
+    cmd = [node, proxy, "--quiet", "--timeout", str(timeout_sec), "-p", prompt]
+    subproc_timeout = timeout_sec + 60
+    last_err = ""
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read())
-                return data["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < _MAX_RETRIES:
-                wait = (2 ** attempt) * 1.0
-                logger.warning("429 rate-limited, retrying in %.1fs", wait)
-                time.sleep(wait)
-                continue
-            raise
-        time.sleep(_API_CALL_INTERVAL)
-    raise RuntimeError("LLM API call failed after retries")
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=subproc_timeout, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # A genuine timeout (default 1h) means the agent is stuck; do not
+            # burn another full budget retrying — surface it immediately.
+            raise RuntimeError(f"agent proxy timed out after {subproc_timeout}s")
+        if result.returncode == 0:
+            return result.stdout
+        if result.returncode in _RETRY_EXIT_CODES and attempt < _MAX_RETRIES:
+            last_err = f"rc={result.returncode}: {result.stderr[:300]}"
+            logger.warning("agent proxy transient failure (attempt %d): %s",
+                           attempt + 1, last_err)
+            continue
+        raise RuntimeError(
+            f"agent proxy failed (rc={result.returncode}): {result.stderr[:500]}"
+        )
+    raise RuntimeError(f"agent proxy failed after {_MAX_RETRIES + 1} attempts: {last_err}")
+
+
+# Deprecated alias retained for any external callers; delegates to the agent proxy.
+def call_llm_api(prompt: str, api_key: str | None = None) -> str:  # noqa: ARG001
+    """Deprecated: use call_agent(). Kept for backward compatibility."""
+    return call_agent(prompt)
 
 
 def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
@@ -233,8 +309,11 @@ def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
         new_lines.append(f"  {k}: {v}")
     new_lines.append("concepts:")
     for group in ("primary", "candidates"):
-        for c in update["concepts"].get(group, []):
-            new_lines.append(f"  {group}:")
+        items = update["concepts"].get(group, [])
+        if not items:
+            continue
+        new_lines.append(f"  {group}:")
+        for c in items:
             new_lines.append(f"    - id: {c['id']}")
             new_lines.append(f"      label: {c['label']}")
             new_lines.append(f"      weight: {c['weight']}")
@@ -254,8 +333,11 @@ def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
         f.write("\n".join(new_lines))
 
 
-def analyze_document(doc_path: str, api_key: str) -> AnalysisResult | None:
-    """Analyze a single document via LLM API and update its front matter."""
+def analyze_document(doc_path: str, api_key: str | None = None) -> AnalysisResult | None:
+    """Analyze a single document via ai-hub-agent-proxy and update its front matter.
+
+    api_key is ignored (kept for backward compatibility); the proxy owns credentials.
+    """
     with open(doc_path) as f:
         text = f.read()
 
@@ -270,8 +352,14 @@ def analyze_document(doc_path: str, api_key: str) -> AnalysisResult | None:
     source_type = _extract_fm_field(lines, "source_type") or "web"
     source_url = _extract_fm_field(lines, "source")
 
+    # Cap body length: huge READMEs (LLaMA-Factory, graphrag) can exceed the
+    # proxy's command-line arg budget and fail to launch. 8000 chars keeps the
+    # analysis tractable while preserving the salient content.
+    if len(body) > 8000:
+        body = body[:8000] + "\n\n[... truncated for analysis ...]"
+
     prompt = build_analysis_prompt(source_type, title, body.strip(), source_url)
-    raw_response = call_llm_api(prompt, api_key)
+    raw_response = call_agent(prompt)
 
     analysis = parse_analysis_response(raw_response)
     apply_analysis_to_doc(doc_path, analysis)
