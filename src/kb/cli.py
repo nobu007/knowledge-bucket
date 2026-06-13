@@ -10,6 +10,7 @@ import click
 
 from .analyzer import (
     analyze_document,
+    analyze_documents_parallel,
     build_analysis_prompt,
     find_docs_without_analysis,
     get_api_key,
@@ -164,7 +165,9 @@ updated: {now}
 @main.command()
 @click.option("--analyze", "do_analyze", is_flag=True,
               help="Run LLM analysis on ingested documents")
-def ingest(do_analyze: bool):
+@click.option("--workers", "-w", type=int, default=1,
+              help="Parallel analysis workers when --analyze is set")
+def ingest(do_analyze: bool, workers: int):
     """Process inbox files into records and rebuild the search index."""
     root = kb_root()
     if root is None:
@@ -185,17 +188,17 @@ def ingest(do_analyze: bool):
             click.echo("Warning: ai-hub-agent-proxy not found (set KB_AGENT_PROXY), "
                        "skipping analysis", err=True)
             return
-        analyzed = 0
+        paths, ulid_map = [], {}
         for ulid in ingested:
             doc_path = _find_doc_path(root, ulid)
-            if not doc_path:
-                continue
-            try:
-                analyze_document(doc_path)
-                analyzed += 1
-            except Exception as e:
-                click.echo(f"Analysis failed for {ulid}: {e}", err=True)
-        click.echo(f"Analyzed {analyzed}/{len(ingested)} document(s)")
+            if doc_path:
+                paths.append(doc_path)
+                ulid_map[doc_path] = ulid
+        analyzed, failures = analyze_documents_parallel(paths, workers=workers)
+        for p, err in failures:
+            click.echo(f"Analysis failed for {ulid_map.get(p, '?')}: {err}", err=True)
+        click.echo(f"Analyzed {analyzed}/{len(paths)} document(s) "
+                   f"({workers} worker(s))")
 
 
 @main.command()
@@ -906,7 +909,10 @@ def collections():
 @click.option("--raw-json", is_flag=True, help="Output raw analysis prompt as JSON")
 @click.option("--retry-failed", is_flag=True,
               help="Re-analyze documents missing analysis.confidence")
-def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool):
+@click.option("--workers", "-w", type=int, default=1,
+              help="Parallel analysis workers (agent subprocesses). "
+                   "Cuts wall-clock ~Nx for bulk analysis.")
+def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool, workers: int):
     """Build an analysis prompt for DOC_ID or retry failed analyses."""
     root = kb_root()
     if root is None:
@@ -921,15 +927,13 @@ def analyze(doc_id: str | None, raw_json: bool, retry_failed: bool):
         if not docs:
             click.echo("No documents need re-analysis")
             return
-        analyzed = 0
-        for ulid, doc_path in docs:
-            try:
-                analyze_document(doc_path)
-                analyzed += 1
-                click.echo(f"Analyzed: {ulid}")
-            except Exception as e:
-                click.echo(f"Failed: {ulid}: {e}", err=True)
-        click.echo(f"Re-analyzed {analyzed}/{len(docs)} document(s)")
+        paths = [p for _ulid, p in docs]
+        ulids = {p: u for u, p in docs}
+        analyzed, failures = analyze_documents_parallel(paths, workers=workers)
+        for p, err in failures:
+            click.echo(f"Failed: {ulids.get(p, '?')}: {err}", err=True)
+        click.echo(f"Re-analyzed {analyzed}/{len(docs)} document(s) "
+                   f"({workers} worker(s))")
         return
 
     if not doc_id:

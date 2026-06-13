@@ -301,6 +301,42 @@ class TestAgentProxyBin:
             assert agent_proxy_bin() is None
 
 
+class TestAnalyzeParallel:
+    def test_workers_1_runs_sequentially(self):
+        from kb.analyzer import analyze_documents_parallel
+        with patch("kb.analyzer.analyze_document") as mock_an:
+            paths = ["/a.md", "/b.md", "/c.md"]
+            ok, failures = analyze_documents_parallel(paths, workers=1)
+        assert ok == 3
+        assert failures == []
+        assert mock_an.call_count == 3
+
+    def test_workers_n_runs_concurrently(self):
+        from kb.analyzer import analyze_documents_parallel
+        with patch("kb.analyzer.analyze_document") as mock_an:
+            paths = [f"/d{i}.md" for i in range(10)]
+            ok, failures = analyze_documents_parallel(paths, workers=5)
+        assert ok == 10
+        assert failures == []
+        assert mock_an.call_count == 10
+
+    def test_failures_are_collected_not_raised(self):
+        from kb.analyzer import analyze_documents_parallel
+
+        def fake(path):
+            if path == "/bad.md":
+                raise RuntimeError("boom")
+
+        with patch("kb.analyzer.analyze_document", side_effect=fake):
+            ok, failures = analyze_documents_parallel(
+                ["/good.md", "/bad.md"], workers=2,
+            )
+        assert ok == 1
+        assert len(failures) == 1
+        assert failures[0][0] == "/bad.md"
+        assert "boom" in failures[0][1]
+
+
 class TestApplyAnalysisToDoc:
     def test_writes_analysis_to_front_matter(self):
         analysis = AnalysisResult(

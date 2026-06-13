@@ -366,6 +366,57 @@ def analyze_document(doc_path: str, api_key: str | None = None) -> AnalysisResul
     return analysis
 
 
+def _analyze_one(doc_path: str) -> tuple[str, str | None]:
+    """Analyze a single doc, returning (doc_path, error_message_or_None).
+
+    Each doc is independent (own file, own subprocess), so failures don't abort
+    the batch — the parallel driver records the error and moves on.
+    """
+    try:
+        analyze_document(doc_path)
+        return (doc_path, None)
+    except Exception as e:  # noqa: BLE001 — surface all failures to the driver
+        return (doc_path, str(e))
+
+
+def analyze_documents_parallel(
+    doc_paths: list[str], *, workers: int = 1,
+) -> tuple[int, list[tuple[str, str]]]:
+    """Analyze many documents concurrently via ai-hub-agent-proxy.
+
+    Each analysis is an independent subprocess call (I/O-bound on the agent
+    backend), so a thread pool gives real wall-clock speedup. Returns
+    (success_count, [(doc_path, error), ...]).
+
+    Scaling: workers=N cuts wall-clock ~N× for the analysis phase — the dominant
+    cost when ingesting thousands of sites (single-doc analysis is 1-2 min).
+    """
+    if workers <= 1:
+        ok = 0
+        failures: list[tuple[str, str]] = []
+        for p in doc_paths:
+            _p, err = _analyze_one(p)
+            if err:
+                failures.append((_p, err))
+            else:
+                ok += 1
+        return ok, failures
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    ok = 0
+    failures: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_analyze_one, p): p for p in doc_paths}
+        for fut in as_completed(futures):
+            _p, err = fut.result()
+            if err:
+                failures.append((_p, err))
+            else:
+                ok += 1
+    return ok, failures
+
+
 def find_docs_without_analysis(root: str) -> list[tuple[str, str]]:
     """Find documents missing analysis.confidence. Returns [(ulid, abs_path), ...]."""
     from .core import DOC_DIR, RECORDS_DIR
