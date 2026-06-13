@@ -364,6 +364,42 @@ class TestApplyAnalysisToDoc:
         finally:
             os.unlink(path)
 
+    def test_re_analysis_replaces_not_duplicates(self):
+        """Re-analyzing a doc must not leave duplicate summary/analysis/concepts keys."""
+        analysis = AnalysisResult(
+            summary="Second summary",
+            primary_concepts=[ConceptRef(id="rag", label="RAG")],
+            confidence=0.9,
+            importance=0.8,
+            display_tags=["AI"],
+        )
+        pre_analyzed = (
+            "---\nid: 01K2Z9P7Y8QWERTY1234567890\n"
+            "title: Test\nsource_type: web\n"
+            "summary: First summary\n"
+            "analysis:\n  confidence: 0.5\n"
+            "concepts:\n  primary:\n    - id: concept:old\n"
+            "---\n\nBody.\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write(pre_analyzed)
+            path = f.name
+        try:
+            apply_analysis_to_doc(path, analysis)
+            with open(path) as f:
+                text = f.read()
+            # Each analysis-authored key appears exactly once
+            assert text.count("\nsummary:") == 1
+            assert text.count("\nanalysis:") == 1
+            assert text.count("\nconcepts:") == 1
+            assert text.count("\ntags_display:") == 1
+            # Old values replaced
+            assert "First summary" not in text
+            assert "Second summary" in text
+            assert "concept:old" not in text
+        finally:
+            os.unlink(path)
+
 
 class TestFindDocsWithoutAnalysis:
     def test_finds_unanalyzed_docs(self):

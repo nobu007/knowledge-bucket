@@ -3,13 +3,14 @@
 import math
 import os
 import sqlite3
+import subprocess
 from datetime import UTC, datetime
 
 import yaml
 
 from .core import CONFIG_DIR, DOC_DIR, RECORDS_DIR
 from .dedup import init_sources_table
-from .index import _FM_RE, index_path, init_db
+from .index import _FM_RE, _get_meta, _set_meta, index_path, init_db
 
 
 def init_graph_tables(conn: sqlite3.Connection) -> None:
@@ -44,6 +45,14 @@ def init_graph_tables(conn: sqlite3.Connection) -> None:
             importance REAL NOT NULL DEFAULT 0.0,
             updated_at TEXT NOT NULL
         );
+        -- Secondary indexes: the PK on doc_concepts is (doc_id, concept_id), so a
+        -- lookup BY concept_id (the dominant access path: edge building, df recomputation,
+        -- active-graph-term selection, co-occurrence) is not served by the PK and would
+        -- otherwise full-scan. These convert scans into seeks at 10k+ docs.
+        CREATE INDEX IF NOT EXISTS idx_doc_concepts_concept ON doc_concepts(concept_id);
+        CREATE INDEX IF NOT EXISTS idx_edges_dst_type ON edges(dst_id, edge_type);
+        CREATE INDEX IF NOT EXISTS idx_edges_src_type ON edges(src_id, edge_type);
+        CREATE INDEX IF NOT EXISTS idx_concepts_df ON concepts(df);
     """)
     init_sources_table(conn)
     conn.commit()
@@ -190,14 +199,215 @@ def _read_doc_info(filepath: str) -> dict | None:
     }
 
 
-def build_graph(root: str) -> dict:
-    """Build concept graph from all documents. Returns stats."""
+def _extract_doc_rows(abs_path, aliases, stop, now):
+    """Extract per-doc rows from one Markdown file.
+
+    Returns (info, doc_stats_row, doc_concept_rows, entity_edge_rows,
+    source_edge_rows, concepts_seen, entities_seen) or None if unparseable.
+    Shared by the full and incremental build paths.
+    """
+    info = _read_doc_info(abs_path)
+    if info is None:
+        return None
+    doc_id = info["doc_id"]
+    doc_concepts = []
+    concepts_seen = {}
+    entities_seen = {}
+    entity_edges = []
+    for raw_c in info["concepts"]:
+        concept_id = normalize_concept(raw_c, aliases)
+        if concept_id in stop:
+            continue
+        concepts_seen[concept_id] = concept_id
+        doc_concepts.append((doc_id, concept_id, "primary", 1.0))
+    for ent in info["entities"]:
+        eid = ent["entity_id"]
+        entities_seen[eid] = ent["label"]
+        entity_edges.append((doc_id, eid, "entity", 1.0, now))
+    src_key = info.get("source_key", "")
+    source_edges = [(doc_id, src_key, "source", 1.0, now)] if src_key else []
+    doc_stats = (doc_id, info["source_type"], int(info["has_source"]), 0.0, now)
+    return info, doc_stats, doc_concepts, entity_edges, source_edges, concepts_seen, entities_seen
+
+
+def _apply_doc_rows(conn, doc_stats, doc_concepts, entity_edges, source_edges,
+                    concepts_seen, entities_seen, now):
+    """Upsert one doc's extracted rows (incremental path)."""
+    conn.execute(
+        "INSERT INTO doc_stats (doc_id, source_type, has_source, importance, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(doc_id) DO UPDATE SET source_type=excluded.source_type, "
+        "has_source=excluded.has_source, updated_at=excluded.updated_at",
+        doc_stats,
+    )
+    if doc_concepts:
+        conn.executemany(
+            "INSERT OR IGNORE INTO doc_concepts "
+            "(doc_id, concept_id, role, weight) VALUES (?, ?, ?, ?)",
+            doc_concepts,
+        )
+    if entity_edges:
+        conn.executemany(
+            "INSERT OR IGNORE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) VALUES (?, ?, ?, ?, ?)",
+            entity_edges,
+        )
+    if source_edges:
+        conn.executemany(
+            "INSERT OR IGNORE INTO edges "
+            "(src_id, dst_id, edge_type, weight, updated_at) VALUES (?, ?, ?, ?, ?)",
+            source_edges,
+        )
+    if concepts_seen:
+        conn.executemany(
+            "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
+            "VALUES (?, ?, 'concept', 0, 0, ?) "
+            "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
+            [(cid, label, now) for cid, label in concepts_seen.items()],
+        )
+    if entities_seen:
+        conn.executemany(
+            "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
+            "VALUES (?, ?, 'entity', 0, 0, ?) "
+            "ON CONFLICT(concept_id) DO UPDATE SET label=excluded.label",
+            [(eid, label, now) for eid, label in entities_seen.items()],
+        )
+
+
+def _delete_doc_rows(conn, doc_id):
+    """Remove all per-doc graph rows (incremental path: changed/deleted docs)."""
+    conn.execute("DELETE FROM doc_concepts WHERE doc_id = ?", (doc_id,))
+    conn.execute("DELETE FROM doc_stats WHERE doc_id = ?", (doc_id,))
+    conn.execute(
+        "DELETE FROM edges WHERE src_id = ? OR dst_id = ?", (doc_id, doc_id),
+    )
+
+
+def build_graph(root: str, full: bool = False) -> dict:
+    """Build concept graph from documents. Returns stats.
+
+    By default incremental: uses ``git diff`` against the last build commit to
+    process only changed documents (mirrors sync_index). Falls back to a full
+    rebuild when ``full=True``, when no previous commit is recorded, or when git
+    is unavailable. df, importance, and global edges are recomputed every build
+    (cheap once the per-doc rows are in place and indexes exist).
+    """
+    from .index import _git_head
+
     db_path = index_path(root)
     conn = init_db(db_path)
     init_graph_tables(conn)
 
     aliases = load_aliases(root)
     stop = load_stop_concepts(root)
+    now = datetime.now(UTC).isoformat()
+
+    # Try incremental unless full rebuild requested.
+    changed = None if full else _git_changed_docs(conn, root)
+    if changed is None:
+        return _build_graph_full(conn, root, aliases, stop, now)
+    return _build_graph_incremental(conn, root, aliases, stop, now, changed)
+
+
+def _git_changed_docs(conn, root):
+    """Return (added_or_modified_paths, deleted_doc_ids) or None to fall back.
+
+    Falls back to None (→ full rebuild) when git is missing, no previous build
+    commit is recorded, or the recorded commit no longer exists.
+    """
+    from .index import _git_head
+
+    last = _get_meta(conn, "last_graph_build_commit")
+    head = _git_head(root)
+    if not head or not last or head == last:
+        return None if not head or not last else ([], [])
+
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-t", last],
+            cwd=root, capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--name-status", last, head, "--",
+             os.path.join(RECORDS_DIR, DOC_DIR)],
+            cwd=root, capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    changed_paths, deleted_ids = [], []
+    for line in r.stdout.strip().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        status, rel_path = parts
+        if not rel_path.endswith(".md"):
+            continue
+        if status.startswith("D"):
+            deleted_ids.append(os.path.splitext(os.path.basename(rel_path))[0])
+        else:
+            changed_paths.append(os.path.join(root, rel_path))
+    return changed_paths, deleted_ids
+
+
+def _build_graph_incremental(conn, root, aliases, stop, now, changed):
+    """Rebuild only changed docs' per-doc rows, then recompute globals."""
+    from .index import _git_head
+
+    changed_paths, deleted_ids = changed
+    docs_processed = 0
+    all_concepts: dict[str, str] = {}
+    all_entities: dict[str, str] = {}
+
+    # Remove deleted docs entirely
+    for doc_id in deleted_ids:
+        _delete_doc_rows(conn, doc_id)
+
+    # Re-extract changed/added docs: drop old rows first, then insert fresh
+    for abs_path in changed_paths:
+        if not os.path.isfile(abs_path):
+            continue
+        extracted = _extract_doc_rows(abs_path, aliases, stop, now)
+        if extracted is None:
+            continue
+        info, doc_stats, doc_concepts, entity_edges, source_edges, c_seen, e_seen = extracted
+        _delete_doc_rows(conn, info["doc_id"])
+        _apply_doc_rows(conn, doc_stats, doc_concepts, entity_edges, source_edges,
+                        c_seen, e_seen, now)
+        all_concepts.update(c_seen)
+        all_entities.update(e_seen)
+        docs_processed += 1
+
+    if stop:
+        conn.executemany(
+            "INSERT INTO concepts (concept_id, label, kind, df, is_stop, created_at) "
+            "VALUES (?, ?, 'concept', 0, 1, ?) "
+            "ON CONFLICT(concept_id) DO UPDATE SET is_stop=1",
+            [(sc, sc, now) for sc in stop],
+        )
+
+    conn.commit()
+    _set_meta(conn, "last_graph_build_commit", _git_head(root))
+    compute_df(conn)
+    scored = compute_importance(conn)
+    conn.close()
+    return {
+        "docs_processed": docs_processed,
+        "docs_deleted": len(deleted_ids),
+        "concepts_found": len(all_concepts),
+        "entities_found": len(all_entities),
+        "importance_scored": scored,
+        "incremental": True,
+    }
+
+
+def _build_graph_full(conn, root, aliases, stop, now):
+    """Full rebuild: wipe and re-extract every document."""
+    from .index import _git_head
 
     conn.execute("DELETE FROM doc_concepts")
     conn.execute("DELETE FROM edges")
@@ -209,7 +419,6 @@ def build_graph(root: str) -> dict:
     entities_seen: dict[str, str] = {}  # entity_id -> label
     entity_edges = 0
     source_edges = 0
-    now = datetime.now(UTC).isoformat()
 
     doc_stats_rows = []
     doc_concept_rows = []
@@ -221,33 +430,19 @@ def build_graph(root: str) -> dict:
             if not fn.endswith(".md"):
                 continue
             abs_path = os.path.join(dirpath, fn)
-            info = _read_doc_info(abs_path)
-            if info is None:
+            extracted = _extract_doc_rows(abs_path, aliases, stop, now)
+            if extracted is None:
                 continue
+            info, doc_stats, doc_concepts, entity_e, source_e, c_seen, e_seen = extracted
             docs_processed += 1
-            doc_id = info["doc_id"]
-
-            doc_stats_rows.append(
-                (doc_id, info["source_type"], int(info["has_source"]), 0.0, now)
-            )
-
-            for raw_c in info["concepts"]:
-                concept_id = normalize_concept(raw_c, aliases)
-                if concept_id in stop:
-                    continue
-                concepts_seen[concept_id] = concept_id
-                doc_concept_rows.append((doc_id, concept_id, "primary", 1.0))
-
-            for ent in info["entities"]:
-                eid = ent["entity_id"]
-                entities_seen[eid] = ent["label"]
-                entity_edge_rows.append((doc_id, eid, "entity", 1.0, now))
-                entity_edges += 1
-
-            src_key = info.get("source_key", "")
-            if src_key:
-                source_edge_rows.append((doc_id, src_key, "source", 1.0, now))
-                source_edges += 1
+            doc_stats_rows.append(doc_stats)
+            doc_concept_rows.extend(doc_concepts)
+            entity_edge_rows.extend(entity_e)
+            source_edge_rows.extend(source_e)
+            entity_edges += len(entity_e)
+            source_edges += len(source_e)
+            concepts_seen.update(c_seen)
+            entities_seen.update(e_seen)
 
     # Batch insert all collected rows
     if doc_stats_rows:
@@ -307,6 +502,9 @@ def build_graph(root: str) -> dict:
         )
 
     conn.commit()
+    head = _git_head(root)
+    if head:
+        _set_meta(conn, "last_graph_build_commit", head)
     compute_df(conn)
     scored = compute_importance(conn)
     conn.close()
@@ -318,6 +516,7 @@ def build_graph(root: str) -> dict:
         "entity_edges": entity_edges,
         "source_edges": source_edges,
         "importance_scored": scored,
+        "incremental": False,
     }
 
 
@@ -461,40 +660,37 @@ def estimate_importance(
 def compute_importance(conn: sqlite3.Connection) -> int:
     """Compute importance for all documents in doc_stats that have concepts.
 
-    Returns the number of documents scored.
+    Single aggregation query joined to doc_stats (no per-doc SELECT), then one
+    bulk UPDATE via executemany. Returns the number of documents scored.
     """
     now = datetime.now(UTC).isoformat()
     rows = conn.execute(
         "SELECT dc.doc_id, "
         "  COUNT(DISTINCT dc.concept_id) as n_concepts, "
-        "  AVG(CASE WHEN c.df > 0 THEN 1.0 / c.df ELSE 1.0 END) as avg_inv_df "
+        "  AVG(CASE WHEN c.df > 0 THEN 1.0 / c.df ELSE 1.0 END) as avg_inv_df, "
+        "  ds.source_type, ds.has_source "
         "FROM doc_concepts dc "
         "JOIN concepts c ON c.concept_id = dc.concept_id "
+        "JOIN doc_stats ds ON ds.doc_id = dc.doc_id "
         "WHERE c.is_stop = 0 "
         "GROUP BY dc.doc_id"
     ).fetchall()
 
-    scored = 0
-    for doc_id, n_concepts, avg_inv_df in rows:
-        stat = conn.execute(
-            "SELECT source_type, has_source FROM doc_stats WHERE doc_id = ?",
-            (doc_id,),
-        ).fetchone()
-        source_type = stat[0] if stat else "web"
-        has_source = bool(stat[1]) if stat else False
-
+    updates = []
+    for doc_id, n_concepts, avg_inv_df, source_type, has_source in rows:
         imp = estimate_importance(
-            n_concepts, avg_inv_df or 0.0, source_type, has_source,
+            n_concepts, avg_inv_df or 0.0, source_type or "web", bool(has_source),
         )
-        conn.execute(
+        updates.append((imp, now, doc_id))
+
+    if updates:
+        conn.executemany(
             "UPDATE doc_stats SET importance = ?, updated_at = ? "
             "WHERE doc_id = ?",
-            (imp, now, doc_id),
+            updates,
         )
-        scored += 1
-
-    conn.commit()
-    return scored
+        conn.commit()
+    return len(updates)
 
 
 def resolve_virtual_collection(conn: sqlite3.Connection,

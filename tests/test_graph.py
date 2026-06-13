@@ -169,6 +169,64 @@ class TestBuildGraph:
             report = build_graph(tmp)
             assert report["concepts_found"] == 1  # only rag, not ai
 
+    def test_secondary_indexes_created(self):
+        """The concept_id/edges indexes must exist after a build (10k scaling)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "Doc One", ["rag"])
+            build_graph(tmp)
+            conn = sqlite3.connect(index_path(tmp))
+            idxs = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()}
+            conn.close()
+            assert "idx_doc_concepts_concept" in idxs
+            assert "idx_edges_dst_type" in idxs
+            assert "idx_concepts_df" in idxs
+
+    def test_incremental_picks_up_committed_change(self):
+        """Incremental build processes only docs changed since last commit."""
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            _make_config(tmp)
+            _make_doc(tmp, "doc1", "Doc One", ["rag"])
+            subprocess.run(["git", "init"], cwd=tmp, capture_output=True)
+            subprocess.run(["git", "add", "-A"], cwd=tmp, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"],
+                           cwd=tmp, capture_output=True,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "t",
+                                "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                                "GIT_COMMITTER_EMAIL": "t@t"})
+
+            first = build_graph(tmp)  # full (no last commit recorded)
+            assert first["incremental"] is False
+            assert first["docs_processed"] == 1
+
+            # Second build with no changes: incremental, 0 docs processed
+            second = build_graph(tmp)
+            assert second["incremental"] is True
+            assert second["docs_processed"] == 0
+
+            # Add a committed doc; incremental should process only it
+            _make_doc(tmp, "doc2", "Doc Two", ["llm"])
+            subprocess.run(["git", "add", "-A"], cwd=tmp, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "add doc2"],
+                           cwd=tmp, capture_output=True,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "t",
+                                "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                                "GIT_COMMITTER_EMAIL": "t@t"})
+            third = build_graph(tmp)
+            assert third["incremental"] is True
+            assert third["docs_processed"] == 1  # only doc2
+
+            conn = sqlite3.connect(index_path(tmp))
+            n = conn.execute("SELECT COUNT(*) FROM doc_stats").fetchone()[0]
+            conn.close()
+            assert n == 2  # both docs present, doc1 not lost
+
     def test_no_concepts(self):
         with tempfile.TemporaryDirectory() as tmp:
             ensure_dirs(tmp)

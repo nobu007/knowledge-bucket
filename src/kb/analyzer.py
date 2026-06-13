@@ -266,9 +266,12 @@ def call_agent(prompt: str, *, timeout_sec: int = 3600) -> str:
                 timeout=subproc_timeout, check=False,
             )
         except subprocess.TimeoutExpired:
-            # A genuine timeout (default 1h) means the agent is stuck; do not
-            # burn another full budget retrying — surface it immediately.
-            raise RuntimeError(f"agent proxy timed out after {subproc_timeout}s")
+            # A genuine timeout means the agent is stuck; do not burn another
+            # full budget retrying — surface it immediately.
+            raise RuntimeError(
+                f"agent proxy timed out (proxy budget {timeout_sec}s, "
+                f"subprocess limit {subproc_timeout}s)"
+            )
         if result.returncode == 0:
             return result.stdout
         if result.returncode in _RETRY_EXIT_CODES and attempt < _MAX_RETRIES:
@@ -302,7 +305,27 @@ def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
     if fm_end < 0:
         return
 
-    new_lines = lines[:fm_end]
+    # Drop any prior analysis-authored keys (and their nested indented children)
+    # so re-analysis replaces instead of duplicating them. The id/title/
+    # source_*/created/updated/repo_*/raw_ref lines are top-level keys kept as-is.
+    analysis_keys = {"summary", "analysis", "concepts", "tags_display"}
+    kept: list[str] = []
+    skipping = False
+    for line in lines[:fm_end]:
+        if line and not line[0].isspace() and not line.startswith("#"):
+            # a top-level YAML key: "key: ..." or "key:"
+            key = line.split(":", 1)[0].strip()
+            skipping = key in analysis_keys
+        if skipping and (line.startswith("  ") or line.strip() == ""):
+            continue
+        if skipping:
+            continue
+        kept.append(line)
+    # Trim trailing blank lines we may have exposed
+    while kept and kept[-1].strip() == "":
+        kept.pop()
+
+    new_lines = kept
     new_lines.append(f"summary: {update['summary']}")
     new_lines.append("analysis:")
     for k, v in update["analysis"].items():
@@ -347,7 +370,7 @@ def analyze_document(doc_path: str, api_key: str | None = None) -> AnalysisResul
     if fm_end < 0:
         return None
 
-    body = "\n".join(lines[fm_end:])
+    body = "\n".join(lines[fm_end + 1:])
     title = _extract_fm_field(lines, "title") or ulid
     source_type = _extract_fm_field(lines, "source_type") or "web"
     source_url = _extract_fm_field(lines, "source")

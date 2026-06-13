@@ -356,7 +356,9 @@ def sync_cmd(message: str | None):
 
 @main.command("graph")
 @click.argument("subcommand", default="build")
-def graph_cmd(subcommand: str):
+@click.option("--full", is_flag=True,
+              help="Force full rebuild instead of git-diff incremental build")
+def graph_cmd(subcommand: str, full: bool):
     """Build the concept graph from document metadata."""
     root = kb_root()
     if root is None:
@@ -367,16 +369,22 @@ def graph_cmd(subcommand: str):
         click.echo(f"Unknown graph subcommand: {subcommand}. Use 'build'.", err=True)
         raise SystemExit(1)
 
-    report = build_graph(root)
-    click.echo(f"Processed {report['docs_processed']} document(s)")
+    report = build_graph(root, full=full)
+    mode = "incremental" if report.get("incremental") else "full"
+    click.echo(f"Processed {report['docs_processed']} document(s) [{mode}]")
+    if "docs_deleted" in report and report["docs_deleted"]:
+        click.echo(f"Removed {report['docs_deleted']} deleted document(s)")
     click.echo(f"Found {report['concepts_found']} unique concept(s)")
     click.echo(f"Found {report['entities_found']} unique entit(ies)")
     click.echo(f"Scored {report['importance_scored']} document(s) for importance")
 
-    click.echo(f"Created {report['entity_edges']} document-entity edge(s)")
-    click.echo(f"Created {report['source_edges']} document-source edge(s)")
+    if "entity_edges" in report:
+        click.echo(f"Created {report['entity_edges']} document-entity edge(s)")
+        click.echo(f"Created {report['source_edges']} document-source edge(s)")
 
-    # Also build document-document edges and concept co-occurrence edges
+    # Also build document-document edges and concept co-occurrence edges.
+    # These are global and always recomputed (cheap once per-doc rows are set
+    # and the concept_id index exists).
     db = index_path(root)
     conn = sqlite3.connect(db)
     try:
