@@ -10,3 +10,4 @@ inbox/
 
 # === Python test artifacts ===
 .coverage
+.claude/worktrees/

@@ -9,7 +9,6 @@ import sys
 import click
 
 from .analyzer import (
-    analyze_document,
     analyze_documents_parallel,
     build_analysis_prompt,
     find_docs_without_analysis,
@@ -1085,7 +1084,6 @@ def doctor():
     before/after bulk ingestion to catch corruption early.
     """
     from .core import DOC_DIR, RECORDS_DIR
-    from .dedup import find_doc_by_source_key
     from .graph import _read_doc_info
 
     root = kb_root()

@@ -292,7 +292,6 @@ def build_graph(root: str, full: bool = False) -> dict:
     is unavailable. df, importance, and global edges are recomputed every build
     (cheap once the per-doc rows are in place and indexes exist).
     """
-    from .index import _git_head
 
     db_path = index_path(root)
     conn = init_db(db_path)

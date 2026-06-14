@@ -135,6 +135,7 @@ class SentenceTransformerEngine:
                 'Run: pip install -e ".[embedding]"'
             ) from e
         import os as _os
+
         import torch
 
         # Silence noisy HuggingFace hub download / loading progress bars.
