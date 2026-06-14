@@ -1184,8 +1184,9 @@ def vectorize(engine: str):
         if engine == "tfidf":
             report = build_vectors(root)
         else:
-            emb_engine = "openai" if engine in ("embedding", "openai") else "local"
-            report = build_embeddings(root, engine=emb_engine)
+            # "embedding"/"local" → local sentence-transformers model;
+            # "openai" → OpenAI API. See embeddings._get_engine.
+            report = build_embeddings(root, engine=engine)
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)

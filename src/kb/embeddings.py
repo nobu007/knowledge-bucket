@@ -127,8 +127,13 @@ class SentenceTransformerEngine:
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        # Truncate to a representative prefix. Long READMEs blow up the
+        # attention buffer (O(seq_len^2)) — bge-m3 at 8192 tokens requests a
+        # 128GB MPS buffer. The title + opening + dense summary carry the
+        # signal; full-text adds noise, not recall.
+        capped = [t[:2000] for t in texts]
         vecs = self._model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False,
+            capped, normalize_embeddings=True, show_progress_bar=False,
             convert_to_numpy=True,
         )
         return [v.tolist() for v in vecs]
@@ -184,9 +189,17 @@ def build_embeddings(root: str, engine: str = "openai", **kwargs) -> dict:
     norms[norms == 0] = 1.0
     mat /= norms
 
+    # Record which model produced these vectors so search can embed the query
+    # with the SAME model — mixing engines (e.g. bge-m3 docs vs hash query)
+    # yields meaningless cosine scores.
+    model_name = getattr(eng, "_model_name", engine)
+
     path = embeddings_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    np.savez_compressed(path, ids=np.array(doc_ids), vectors=mat, dim=np.array([dim]))
+    np.savez_compressed(
+        path, ids=np.array(doc_ids), vectors=mat,
+        dim=np.array([dim]), model=np.array([model_name]),
+    )
 
     return {"docs_vectorized": len(doc_ids), "engine": engine, "dim": dim}
 
@@ -201,22 +214,24 @@ def embedding_search(root: str, query: str, limit: int = 20) -> list[dict]:
             "Embedding index not found. Run 'kb vectorize --engine embedding' first."
         )
 
-    data = np.load(path)
+    data = np.load(path, allow_pickle=True)
     doc_ids = data["ids"]
     vectors = data["vectors"]
     stored_dim = int(data["dim"][0])
+    # The query MUST be embedded with the same model that built the doc vectors.
+    # Newer .npz files record the model name; fall back to "hash" for legacy.
+    model_name = str(data["model"][0]) if "model" in data.files else "hash"
 
-    # Determine which engine to use for query embedding
-    # Try OpenAI first, fall back to local hash
-    eng: EmbeddingEngine
-    try:
-        eng = OpenAIEngine()
-        q_vecs = eng.embed_texts([query])
-        if eng.dim != stored_dim:
-            raise ValueError(f"Dimension mismatch: query={eng.dim}, stored={stored_dim}")
-    except (Exception):
+    if model_name in ("hash", "local"):
         eng = LocalHashEngine(dim=stored_dim)
-        q_vecs = eng.embed_texts([query])
+    elif model_name.startswith(("http", "openai")) or model_name == "openai":
+        eng = OpenAIEngine()
+    else:
+        # HuggingFace model id (e.g. BAAI/bge-m3) → load the same local model.
+        eng = SentenceTransformerEngine(model=model_name)
+    q_vecs = eng.embed_texts([query])
+    if eng.dim != stored_dim:
+        raise ValueError(f"Dimension mismatch: query={eng.dim}, stored={stored_dim}")
 
     q_vec = np.array(q_vecs[0], dtype=np.float32)
     norm = float(np.linalg.norm(q_vec))
