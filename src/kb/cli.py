@@ -199,6 +199,10 @@ def ingest(do_analyze: bool, workers: int):
             click.echo(f"Analysis failed for {ulid_map.get(p, '?')}: {err}", err=True)
         click.echo(f"Analyzed {analyzed}/{len(paths)} document(s) "
                    f"({workers} worker(s))")
+        # Re-index so FTS/graph reflect the new summary/concepts/concepts front
+        # matter written by the analysis step.
+        if analyzed:
+            sync_index(root)
 
 
 @main.command()

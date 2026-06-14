@@ -431,8 +431,52 @@ class TestFindDocsWithoutAnalysis:
             os.makedirs(abs_dir, exist_ok=True)
             doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, rel)
             with open(doc_path, "w") as f:
-                f.write(f"---\nid: {ulid}\ntitle: Test\n---\n\n")
+                f.write(f"---\nid: {ulid}\ntitle: Test\n")
                 f.write("analysis:\n  confidence: 0.9\n  importance: 0.8\n")
+                f.write("---\n\nBody.\n")
+
+            results = find_docs_without_analysis(tmp)
+            assert len(results) == 0
+
+    def test_body_mentioning_confidence_is_not_false_skip(self):
+        """A doc whose BODY mentions "analysis:"/"confidence:" but whose front
+        matter lacks analysis.confidence must be flagged as needing analysis."""
+        from kb.core import DOC_DIR, RECORDS_DIR, ensure_dirs, generate_ulid, shard_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            ulid = generate_ulid()
+            rel = shard_path(ulid)
+            abs_dir = os.path.join(tmp, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
+            os.makedirs(abs_dir, exist_ok=True)
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, rel)
+            with open(doc_path, "w") as f:
+                f.write(f"---\nid: {ulid}\ntitle: Test\n---\n\n")
+                f.write("This doc discusses analysis: and confidence: in its body\n")
+                f.write("but has no analysis front matter at all.\n")
+
+            results = find_docs_without_analysis(tmp)
+            assert len(results) == 1
+            assert results[0][0] == ulid
+
+    def test_front_matter_confidence_zero_still_analyzed(self):
+        """analysis.confidence of 0 is a real value (not None), so the doc is
+        treated as analyzed and must NOT be flagged."""
+        from kb.core import DOC_DIR, RECORDS_DIR, ensure_dirs, generate_ulid, shard_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ensure_dirs(tmp)
+            ulid = generate_ulid()
+            rel = shard_path(ulid)
+            abs_dir = os.path.join(tmp, RECORDS_DIR, DOC_DIR, os.path.dirname(rel))
+            os.makedirs(abs_dir, exist_ok=True)
+            doc_path = os.path.join(tmp, RECORDS_DIR, DOC_DIR, rel)
+            with open(doc_path, "w") as f:
+                f.write(
+                    f"---\nid: {ulid}\ntitle: Test\n"
+                    "analysis:\n  confidence: 0.0\n"
+                    "---\n\nBody.\n"
+                )
 
             results = find_docs_without_analysis(tmp)
             assert len(results) == 0

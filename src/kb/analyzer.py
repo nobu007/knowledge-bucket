@@ -443,8 +443,14 @@ def analyze_documents_parallel(
 
 
 def find_docs_without_analysis(root: str) -> list[tuple[str, str]]:
-    """Find documents missing analysis.confidence. Returns [(ulid, abs_path), ...]."""
+    """Find documents missing analysis.confidence. Returns [(ulid, abs_path), ...].
+
+    Checks the parsed front matter's analysis.confidence key specifically, so a
+    doc whose BODY happens to mention "analysis:" or "confidence:" is not
+    falsely treated as already analyzed.
+    """
     from .core import DOC_DIR, RECORDS_DIR
+    from .graph import _parse_front_matter_yaml
 
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     results = []
@@ -455,10 +461,15 @@ def find_docs_without_analysis(root: str) -> list[tuple[str, str]]:
             abs_path = os.path.join(dirpath, fn)
             with open(abs_path) as f:
                 text = f.read()
-            if "analysis:" not in text or "confidence:" not in text:
-                ulid = _extract_ulid(text)
+            meta, _body = _parse_front_matter_yaml(text)
+            analysis = meta.get("analysis")
+            confidence = (
+                analysis.get("confidence") if isinstance(analysis, dict) else None
+            )
+            if confidence is None:
+                ulid = meta.get("id") or _extract_ulid(text)
                 if ulid:
-                    results.append((ulid, abs_path))
+                    results.append((str(ulid), abs_path))
     return results
 
 
