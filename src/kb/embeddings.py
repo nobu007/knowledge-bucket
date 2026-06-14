@@ -95,12 +95,59 @@ class LocalHashEngine:
         return results
 
 
+class SentenceTransformerEngine:
+    """Real local embedding model via sentence-transformers (MPS-accelerated on Apple Silicon).
+
+    Default model is BAAI/bge-m3: multilingual (JA/EN), 8192-token context, top MTEB.
+    Override with KB_EMBED_MODEL. Requires the optional [embedding] extra:
+    ``pip install -e ".[embedding]"``.
+    """
+
+    def __init__(self, model: str | None = None):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise RuntimeError(
+                "sentence-transformers not installed. "
+                'Run: pip install -e ".[embedding]"'
+            ) from e
+        import torch
+
+        self._model_name = model or os.environ.get("KB_EMBED_MODEL", "BAAI/bge-m3")
+        device = "mps" if torch.backends.mps.is_available() else (
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        self._model = SentenceTransformer(self._model_name, device=device)
+        self._dim = self._model.get_sentence_embedding_dimension()
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        vecs = self._model.encode(
+            texts, normalize_embeddings=True, show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        return [v.tolist() for v in vecs]
+
+
+
 def _get_engine(engine: str, **kwargs) -> EmbeddingEngine:
     if engine == "openai":
         return OpenAIEngine(**kwargs)
-    if engine == "local":
+    if engine in ("local", "embedding"):
+        # Real local model (sentence-transformers). KB_EMBED_MODEL selects the
+        # model; default BAAI/bge-m3 for multilingual JA/EN + long context.
+        return SentenceTransformerEngine(**kwargs)
+    if engine == "hash":
         return LocalHashEngine(**kwargs)
-    raise ValueError(f"Unknown embedding engine: {engine!r}. Use 'openai' or 'local'.")
+    raise ValueError(
+        f"Unknown embedding engine: {engine!r}. "
+        "Use 'local' (sentence-transformers), 'openai', or 'hash'."
+    )
 
 
 def build_embeddings(root: str, engine: str = "openai", **kwargs) -> dict:

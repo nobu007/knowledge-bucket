@@ -61,7 +61,7 @@ class TestGetEngine:
             _get_engine("nonexistent")
 
     def test_local(self):
-        eng = _get_engine("local")
+        eng = _get_engine("hash")
         assert isinstance(eng, LocalHashEngine)
 
     def test_openai(self):
@@ -72,25 +72,25 @@ class TestGetEngine:
 class TestBuildEmbeddings:
     def test_no_index_raises(self, kb):
         with pytest.raises(FileNotFoundError, match="No index"):
-            build_embeddings(kb, engine="local")
+            build_embeddings(kb, engine="hash")
 
     def test_empty_index(self, kb):
         db = index_path(kb)
         conn = init_db(db)
         conn.close()
-        result = build_embeddings(kb, engine="local")
+        result = build_embeddings(kb, engine="hash")
         assert result["docs_vectorized"] == 0
 
     def test_creates_file(self, kb):
         _index_doc(kb, "id001", "Test", content="hello world")
-        result = build_embeddings(kb, engine="local")
+        result = build_embeddings(kb, engine="hash")
         assert result["docs_vectorized"] == 1
         assert os.path.isfile(embeddings_path(kb))
 
     def test_vector_shape(self, kb):
         for i in range(5):
             _index_doc(kb, f"id{i:03d}", f"Doc {i}", content=f"document content number {i}")
-        result = build_embeddings(kb, engine="local", dim=128)
+        result = build_embeddings(kb, engine="hash", dim=128)
         assert result["dim"] == 128
 
         data = np.load(embeddings_path(kb))
@@ -101,7 +101,7 @@ class TestBuildEmbeddings:
         for i in range(3):
             _index_doc(kb, f"id{i:03d}", f"Doc {i}",
                        content=f"machine learning neural network deep learning {i}")
-        build_embeddings(kb, engine="local", dim=64)
+        build_embeddings(kb, engine="hash", dim=64)
 
         data = np.load(embeddings_path(kb))
         norms = np.linalg.norm(data["vectors"], axis=1)
@@ -110,8 +110,8 @@ class TestBuildEmbeddings:
 
     def test_engine_in_result(self, kb):
         _index_doc(kb, "id001", "Test", content="test")
-        result = build_embeddings(kb, engine="local")
-        assert result["engine"] == "local"
+        result = build_embeddings(kb, engine="hash")
+        assert result["engine"] == "hash"
 
 
 class TestEmbeddingSearch:
@@ -124,7 +124,7 @@ class TestEmbeddingSearch:
                    content="graph rag retrieval augmented generation knowledge graph")
         _index_doc(kb, "id002", "Cooking",
                    content="cooking recipe kitchen food meal preparation")
-        build_embeddings(kb, engine="local", dim=64)
+        build_embeddings(kb, engine="hash", dim=64)
 
         results = embedding_search(kb, "graph rag")
         assert len(results) > 0
@@ -135,7 +135,7 @@ class TestEmbeddingSearch:
 
     def test_scores_between_zero_and_one(self, kb):
         _index_doc(kb, "id001", "Test", content="hello world")
-        build_embeddings(kb, engine="local", dim=64)
+        build_embeddings(kb, engine="hash", dim=64)
 
         results = embedding_search(kb, "hello")
         if results:
@@ -145,7 +145,7 @@ class TestEmbeddingSearch:
         for i in range(10):
             _index_doc(kb, f"id{i:03d}", f"Doc {i}",
                        content=f"document content text about topic {i}")
-        build_embeddings(kb, engine="local", dim=64)
+        build_embeddings(kb, engine="hash", dim=64)
 
         results = embedding_search(kb, "document", limit=3)
         assert len(results) <= 3

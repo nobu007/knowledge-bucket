@@ -39,6 +39,9 @@ vector = [
 storage = [
     "boto3>=1.28",
 ]
+embedding = [
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 kb = "kb.cli:main"
