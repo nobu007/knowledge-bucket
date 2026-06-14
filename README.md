@@ -13,6 +13,9 @@ pip install git+https://github.com/nobu007/knowledge-bucket.git
 
 # 開発モード（リポジトリをcloneしている場合）
 pip install -e ".[dev]"
+
+# セマンティック検索（Embedding）を使う場合
+pip install -e ".[embedding]"
 ```
 
 ## クイックスタート
@@ -54,7 +57,7 @@ kb search "hello"
 | `kb index --rebuild` | 全件インデックス再構築 |
 | `kb index --verify` | FTSインデックス整合性チェック |
 | `kb index --repair` | 欠損エントリ再構築・ゴミエントリ削除 |
-| `kb vectorize` | TF-IDF / Embedding vector index構築（`--engine tfidf\|embedding`） |
+| `kb vectorize` | vector index構築（`--engine tfidf\|embedding\|local\|openai`） |
 
 ### 専用入力
 
@@ -69,8 +72,9 @@ kb search "hello"
 
 | コマンド | 説明 |
 |---|---|
-| `kb analyze` | 文書のLLM分析（`--retry-failed` で未分析文書を再分析） |
-| `kb graph build` | 概念グラフを構築 |
+| `kb analyze` | 文書のLLM分析（`--retry-failed` で未分析文書を再分析、`-w/--workers N` でN並列） |
+| `kb graph build` | 概念グラフを構築（`--full` で全件再構築） |
+| `kb doctor` | データ品質チェック（非0終了で問題あり） |
 | `kb concepts suggest` | concept noteの昇格候補を提案・生成 |
 | `kb health` | グラフ品質メトリクス表示（`--json`） |
 | `kb concept <concept_id>` | 概念メタデータ・関連文書・共起概念表示 |
@@ -91,14 +95,28 @@ kb search "hello"
 
 ## LLM分析パイプライン
 
-環境変数 `KB_LLM_API_KEY` を設定すると、LLM APIで文書の自動分析が可能。
+LLM分析は直接のAPI呼び出しではなく、ローカルの [ai-hub-agent-proxy](https://github.com/nobu007/ai-hub_agent_proxy) 経由で実行する（Claude Code プライマリ / OpenCode フォールバック）。proxyは `KB_AGENT_PROXY` 環境変数で指定、未設定時は `~/ai-hub_agent_proxy/dist/cli.js` を自動検出する。
 
 ```bash
-KB_LLM_API_KEY=xxx kb ingest --analyze    # インポート時に分析
-KB_LLM_API_KEY=xxx kb analyze --retry-failed  # 未分析文書を再分析
+export KB_AGENT_PROXY=~/ai-hub_agent_proxy/dist/cli.js
+kb ingest --analyze -w 4        # インポート時に分析（4並列）
+kb analyze --retry-failed -w 4  # 未分析文書を再分析（4並列）
+kb doctor                       # 分析カバレッジ等のデータ品質チェック
 ```
 
-追加設定: `KB_LLM_BASE_URL`（APIベースURL）、`KB_LLM_MODEL`（モデル名）。
+`-w/--workers N` は複数のproxy subprocessを並列起動し、バルク分析のwall-clockを約N分の1に短縮する。
+
+## セマンティック検索（Embedding）
+
+Embeddingベースのセマンティック検索を使うには `[embedding]` extraをインストールする。
+
+```bash
+pip install -e ".[embedding]"
+kb vectorize --engine embedding         # BAAI/bge-m3 でベクトル化（デフォルト）
+kb search "query" --semantic            # embedding indexが優先される
+```
+
+モデルは環境変数 `KB_EMBED_MODEL` で変更可能（デフォルト `BAAI/bge-m3`、多言語JA/EN・8192トークン）。他のエンジン: `--engine openai`（OpenAI API）、`--engine local`（sentence-transformers）、`--engine tfidf`（TF-IDF、デフォルト）。
 
 ## テスト
 
