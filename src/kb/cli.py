@@ -31,7 +31,7 @@ from .core import (
     shard_path,
     yaml_scalar,
 )
-from .dedup import compute_content_hash, generate_source_key
+from .dedup import compute_content_hash, find_doc_by_source_key, generate_source_key
 from .embeddings import build_embeddings, embedding_search
 from .graph import build_graph, load_taxonomy, resolve_virtual_collection
 from .health import compute_health
@@ -635,26 +635,43 @@ def add_repo(url: str):
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
 
-    ulid = generate_ulid()
-    rel_path = shard_path(ulid)
-    abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
-    os.makedirs(abs_dir, exist_ok=True)
-    abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
-
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
+    # Compute source_key first; repo source_key is URL-derived and independent
+    # of the ulid, so we can detect an existing doc before minting a new id.
     repo_skey = generate_source_key(
         repo_data["source_type"],
         source_url=repo_data.get("source_url"),
-        doc_ulid=ulid,
+        doc_ulid="probe",
     )
+    existing = find_doc_by_source_key(root, repo_skey)
+    if existing:
+        abs_path = existing
+        with open(abs_path) as _f:
+            _old = _f.read()
+        ulid = _old.split("id:", 1)[1].split("\n", 1)[0].strip()
+        rel_path = os.path.relpath(abs_path, os.path.join(root, RECORDS_DIR, DOC_DIR))
+        created_line = ""
+        for _l in _old.split("\n"):
+            if _l.startswith("created:"):
+                created_line = _l
+                break
+        click.echo(f"Updating existing doc for {repo_skey}", err=True)
+    else:
+        ulid = generate_ulid()
+        rel_path = shard_path(ulid)
+        abs_dir = os.path.join(root, RECORDS_DIR, DOC_DIR, os.path.dirname(rel_path))
+        os.makedirs(abs_dir, exist_ok=True)
+        abs_path = os.path.join(root, RECORDS_DIR, DOC_DIR, rel_path)
+        created_line = f"created: {now}"
+
     front_matter = f"""\
 ---
 id: {ulid}
 title: {yaml_scalar(repo_data['title'])}
 source_type: {repo_data['source_type']}
 source_key: {repo_skey}
-created: {now}
+{created_line}
 updated: {now}
 source: {repo_data['source_url']}
 """

@@ -1,6 +1,7 @@
 """Deduplication: source_key generation, content_hash, sources table."""
 
 import hashlib
+import os
 import sqlite3
 import urllib.parse
 
@@ -137,6 +138,33 @@ def init_sources_table(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.commit()
+
+
+def find_doc_by_source_key(root: str, source_key: str) -> str | None:
+    """Return the abs path of an existing doc with this source_key, or None.
+
+    The add-* commands write directly to records/doc (bypassing ingest, so the
+    sources table isn't populated). This walks records/doc for a matching
+    ``source_key:`` line so re-adding the same URL/repo updates instead of
+    duplicating. O(N) but add-* is a manual, infrequent operation.
+    """
+    from .core import DOC_DIR, RECORDS_DIR
+
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    needle = f"source_key: {source_key}"
+    for dirpath, _dirnames, filenames in os.walk(doc_dir):
+        for fn in filenames:
+            if not fn.endswith(".md"):
+                continue
+            abs_path = os.path.join(dirpath, fn)
+            try:
+                with open(abs_path) as f:
+                    head = f.read(4096)
+            except OSError:
+                continue
+            if needle in head:
+                return abs_path
+    return None
 
 
 def check_duplicate(conn: sqlite3.Connection, source_key: str) -> dict | None:
