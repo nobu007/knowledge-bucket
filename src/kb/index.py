@@ -170,23 +170,13 @@ def _cleanup_stale(conn: sqlite3.Connection, root: str) -> int:
 
 
 @_retry_locked
-def sync_index(root: str) -> int:
-    """Incrementally index using git-diff when possible, falling back to full walk.
+def _reconcile_unindexed(conn: sqlite3.Connection, root: str) -> int:
+    """Index any records/doc/*.md files not yet in FTS, including uncommitted ones.
 
-    Per GOAL.md section 14: track ``last_indexed_commit`` in SQLite, use
-    ``git diff --name-status`` for O(changes) instead of O(N) file walk.
+    The git-diff fast path only sees committed changes, so a freshly ``kb add``ed
+    document (not yet committed) is missed. This walks the working tree and
+    backfills anything absent from the index, making add→search work immediately.
     """
-    db_path = index_path(root)
-    conn = init_db(db_path)
-
-    # Try git-diff-based sync
-    diff_result = _git_diff_sync(conn, root)
-    if diff_result is not None:
-        conn.close()
-        return diff_result
-
-    # Fallback: full file walk
-    _cleanup_stale(conn, root)
     existing = {r[0] for r in conn.execute("SELECT id FROM docs").fetchall()}
     doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
     rows = []
@@ -218,14 +208,38 @@ def sync_index(root: str) -> int:
             rows,
         )
         conn.commit()
+    return len(rows)
 
-    # Record HEAD after full walk so next sync can be diff-based
+
+def sync_index(root: str) -> int:
+    """Incrementally index using git-diff when possible, then reconcile the
+    working tree to catch uncommitted files.
+
+    Per GOAL.md section 14: track ``last_indexed_commit`` in SQLite, use
+    ``git diff --name-status`` for O(changes) instead of O(N) file walk. But
+    the diff path only sees committed changes, so always finish with a working-
+    tree reconciliation so freshly-added (uncommitted) docs are searchable.
+    """
+    db_path = index_path(root)
+    conn = init_db(db_path)
+
+    # Try git-diff-based sync for committed changes (fast path).
+    diff_result = _git_diff_sync(conn, root)
+
+    # Always reconcile the working tree for uncommitted/untracked files.
+    _cleanup_stale(conn, root)
+    reconciled = _reconcile_unindexed(conn, root)
+
+    # Record HEAD so the next diff is small (best-effort; uncommitted work
+    # will still be re-reconciled next run since the file walk is idempotent).
     head = _git_head(root)
     if head:
         _set_meta(conn, "last_indexed_commit", head)
 
     conn.close()
-    return len(rows)
+    if diff_result is not None:
+        return diff_result + reconciled
+    return reconciled
 
 
 def _git_head(root: str) -> str | None:

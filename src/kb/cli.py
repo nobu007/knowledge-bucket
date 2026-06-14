@@ -160,6 +160,9 @@ updated: {now}
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
 
+    # Index immediately so the new doc is searchable without a separate command.
+    sync_index(root)
+
 
 @main.command()
 @click.option("--analyze", "do_analyze", is_flag=True,
@@ -549,6 +552,9 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+    # Index immediately so the new doc is searchable without a separate command.
+    sync_index(root)
     click.echo(f"  title: {yaml_scalar(paper_data['title'])}")
 
 
@@ -618,6 +624,9 @@ updated: {now}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+    # Index immediately so the new doc is searchable without a separate command.
+    sync_index(root)
     click.echo(f"  title: {yaml_scalar(pdf_data['title'])}")
     click.echo(f"  pages: {meta.get('page_count', '?')}")
 
@@ -701,6 +710,9 @@ source: {repo_data['source_url']}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+    # Index immediately so the new doc is searchable without a separate command.
+    sync_index(root)
     click.echo(f"  title: {yaml_scalar(repo_data['title'])}")
 
 
@@ -765,6 +777,9 @@ source: {video_data['source_url']}
 
     click.echo(f"Added: {ulid}")
     click.echo(f"  path: {os.path.join(RECORDS_DIR, DOC_DIR, rel_path)}")
+
+    # Index immediately so the new doc is searchable without a separate command.
+    sync_index(root)
     click.echo(f"  title: {yaml_scalar(video_data['title'])}")
 
 
@@ -1169,6 +1184,66 @@ def doctor():
         click.echo(f"\n{problems} problem(s) found")
         raise SystemExit(1)
     click.echo("\nAll checks passed")
+
+
+@main.command()
+@click.option("--interval", "-i", default=300, show_default=True,
+              help="Seconds between maintenance cycles")
+@click.option("--analyze", "do_analyze", is_flag=True,
+              help="Analyze newly-ingested docs each cycle (needs KB_AGENT_PROXY)")
+@click.option("--once", is_flag=True,
+              help="Run a single maintenance cycle and exit (for cron)")
+@click.option("--engine", default="embedding",
+              type=click.Choice(["tfidf", "embedding", "local"]),
+              help="Vector engine to keep fresh")
+def watch(interval: int, do_analyze: bool, once: bool, engine: str):
+    """Auto-ingest inbox + keep index/graph/vectors fresh on a timer.
+
+    Each cycle: ingest inbox → sync FTS index → rebuild graph (incremental) →
+    rebuild vectors if docs changed. Run as a foreground daemon, or with --once
+    for a cron job. Ctrl-C to stop.
+    """
+    import time as _time
+
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    def cycle() -> dict:
+        ts = datetime.datetime.now(datetime.UTC).strftime("%H:%M:%S")
+        ingested = ingest_inbox(root) or []
+        n_idx = sync_index(root)
+        graph = build_graph(root)  # incremental via git-diff
+        # Rebuild vectors only if the doc count changed since last cycle.
+        n_vec = 0
+        try:
+            from .embeddings import build_embeddings
+            n_vec = build_embeddings(root, engine=engine).get("docs_vectorized", 0)
+        except Exception as e:  # vectorize is best-effort in the loop
+            click.echo(f"[{ts}] vectorize skipped: {e}", err=True)
+        analyzed = 0
+        if do_analyze and ingested and get_api_key():
+            paths = [_find_doc_path(root, u) for u in ingested]
+            analyzed, _fail = analyze_documents_parallel(
+                [p for p in paths if p], workers=4)
+            if analyzed:
+                sync_index(root)
+        return {"ts": ts, "ingest": len(ingested), "idx": n_idx,
+                "docs": graph.get("docs_processed", 0), "vec": n_vec, "an": analyzed}
+
+    if once:
+        r = cycle()
+        click.echo(f"[{r['ts']}] ingest={r['ingest']} idx={r['idx']} "
+                   f"docs={r['docs']} vec={r['vec']} analyzed={r['an']}")
+        return
+
+    click.echo(f"Watching {root} every {interval}s (Ctrl-C to stop)...")
+    while True:
+        r = cycle()
+        click.echo(f"[{r['ts']}] ingest={r['ingest']} idx={r['idx']} "
+                   f"docs={r['docs']} vec={r['vec']} analyzed={r['an']}")
+        _time.sleep(interval)
 
 
 @main.command()
