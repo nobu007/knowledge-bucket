@@ -97,22 +97,39 @@ def build_concept_edges(conn: sqlite3.Connection, min_cooccurrence: int = 2,
     """
     hub_threshold = compute_hub_threshold(conn)
 
-    # Find all concept pairs that co-occur in the same document
-    rows = conn.execute(
-        "SELECT dc1.concept_id, dc2.concept_id, COUNT(*) as cooc "
-        "FROM doc_concepts dc1 "
-        "JOIN doc_concepts dc2 ON dc1.doc_id = dc2.doc_id "
-        "JOIN concepts c1 ON c1.concept_id = dc1.concept_id "
-        "JOIN concepts c2 ON c2.concept_id = dc2.concept_id "
-        "WHERE dc1.concept_id < dc2.concept_id "
-        "  AND c1.is_stop = 0 AND c2.is_stop = 0 "
-        "  AND c1.df <= ? AND c2.df <= ? "
-        "  AND c1.df >= 2 AND c2.df >= 2 "
-        "GROUP BY dc1.concept_id, dc2.concept_id "
-        "HAVING COUNT(*) >= ? "
-        "ORDER BY cooc DESC",
-        (hub_threshold, hub_threshold, min_cooccurrence),
-    ).fetchall()
+    # Eligible concepts: df in [2, hub_threshold] and not a stop word. This
+    # keeps the same filters as the prior SQL self-join while letting us build
+    # the co-occurrence map in Python instead of an O(K^2) database join.
+    eligible = {
+        cid for (cid,) in conn.execute(
+            "SELECT concept_id FROM concepts "
+            "WHERE is_stop = 0 AND df >= 2 AND df <= ?",
+            (hub_threshold,),
+        ).fetchall()
+    }
+
+    # One pass over doc_concepts: {concept_id: set(doc_ids)}.
+    concept_docs: dict[str, set[str]] = {}
+    for doc_id, concept_id in conn.execute(
+        "SELECT doc_id, concept_id FROM doc_concepts"
+    ).fetchall():
+        if concept_id in eligible:
+            concept_docs.setdefault(concept_id, set()).add(doc_id)
+
+    # For each pair of concepts sharing >=1 document, weight = shared-doc count.
+    pairs: list[tuple[str, str, int]] = []
+    eligible_concepts = sorted(concept_docs)
+    for i, c1 in enumerate(eligible_concepts):
+        docs1 = concept_docs[c1]
+        for c2 in eligible_concepts[i + 1:]:
+            shared = len(docs1 & concept_docs[c2])
+            if shared >= min_cooccurrence:
+                # Normalize ordering so c1 < c2 (guaranteed by sorted iteration).
+                pairs.append((c1, c2, shared))
+
+    # Order by descending co-occurrence (strongest pairs first); concept-id
+    # pair as a deterministic tiebreak for stable top_k selection.
+    pairs.sort(key=lambda p: (-p[2], p[0], p[1]))
 
     from datetime import UTC, datetime
     now = datetime.now(UTC).isoformat()
@@ -120,7 +137,7 @@ def build_concept_edges(conn: sqlite3.Connection, min_cooccurrence: int = 2,
     # Keep only top_k per concept
     concept_edge_count: dict[str, int] = {}
     edges = 0
-    for c1, c2, cooc in rows:
+    for c1, c2, cooc in pairs:
         if concept_edge_count.get(c1, 0) >= top_k:
             continue
         if concept_edge_count.get(c2, 0) >= top_k:

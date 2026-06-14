@@ -243,6 +243,99 @@ class TestBuildConceptEdges:
             conn.close()
 
 
+def _setup_cooc_db_three_plus(tmp):
+    """Create a DB where two concepts co-occur in 3+ documents."""
+    db = os.path.join(tmp, "index.db")
+    conn = init_db(db)
+    init_graph_tables(conn)
+
+    # 6 docs: rag + graph-rag share d1..d4 (4 docs); rag + embedding share d1..d3 (3)
+    for i in range(1, 7):
+        conn.execute(
+            "INSERT INTO docs (id, title, source, source_type, rel_path, content) "
+            f"VALUES ('d{i}', 'Doc {i}', '', 'web', 'd{i}.md', 'Content {i}')"
+        )
+    conn.commit()
+
+    concepts = [
+        ("rag", "RAG", 5),
+        ("graph-rag", "GraphRAG", 4),
+        ("embedding", "Embedding", 3),
+        ("cooking", "Cooking", 1),  # df=1, excluded
+    ]
+    for cid, label, df in concepts:
+        conn.execute(
+            "INSERT INTO concepts (concept_id, label, df, is_stop, created_at) "
+            "VALUES (?, ?, ?, 0, '2026-01-01')",
+            (cid, label, df),
+        )
+    conn.commit()
+
+    assignments = {
+        "d1": ["rag", "graph-rag", "embedding"],
+        "d2": ["rag", "graph-rag", "embedding"],
+        "d3": ["rag", "graph-rag", "embedding"],
+        "d4": ["rag", "graph-rag"],
+        "d5": ["rag"],
+        "d6": ["cooking"],
+    }
+    for doc_id, cids in assignments.items():
+        for c in cids:
+            conn.execute(
+                "INSERT INTO doc_concepts (doc_id, concept_id, role, weight) "
+                "VALUES (?, ?, 'primary', 1.0)",
+                (doc_id, c),
+            )
+    conn.commit()
+    return conn
+
+
+class TestBuildConceptEdgesThreePlusShared:
+    def test_weight_reflects_three_plus_shared_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db_three_plus(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            # rag+graph-rag co-occur in d1,d2,d3,d4 -> weight 4
+            row = conn.execute(
+                "SELECT weight FROM edges "
+                "WHERE src_id='rag' AND dst_id='graph-rag' "
+                "AND edge_type='cooccurrence'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == 4.0
+            conn.close()
+
+    def test_min_cooccurrence_three_filters_lower_pairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db_three_plus(tmp)
+            # min_cooccurrence=3 keeps rag+graph-rag (4) and rag+embedding (3),
+            # but nothing else.
+            edges = build_concept_edges(conn, min_cooccurrence=3)
+            assert edges >= 4  # at least one pair, bidirectional
+
+            emb = conn.execute(
+                "SELECT weight FROM edges "
+                "WHERE src_id='rag' AND dst_id='embedding' "
+                "AND edge_type='cooccurrence'"
+            ).fetchone()
+            assert emb is not None
+            assert emb[0] == 3.0
+            conn.close()
+
+    def test_higher_cooc_ranked_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _setup_cooc_db_three_plus(tmp)
+            build_concept_edges(conn, min_cooccurrence=2)
+            # rag's top neighbor should be graph-rag (4 shared) over embedding (3)
+            top = conn.execute(
+                "SELECT dst_id FROM edges "
+                "WHERE src_id='rag' AND edge_type='cooccurrence' "
+                "ORDER BY weight DESC LIMIT 1"
+            ).fetchone()
+            assert top[0] == "graph-rag"
+            conn.close()
+
+
 class TestFindCooccurringConcepts:
     def test_returns_cooccurring_concepts(self):
         with tempfile.TemporaryDirectory() as tmp:
