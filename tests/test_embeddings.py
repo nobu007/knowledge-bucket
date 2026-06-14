@@ -10,6 +10,7 @@ from kb.core import ensure_dirs
 from kb.embeddings import (
     LocalHashEngine,
     OpenAIEngine,
+    _engine_cache,
     _get_engine,
     build_embeddings,
     embedding_search,
@@ -187,3 +188,58 @@ class TestOpenAIEngineMocked:
         engine = OpenAIEngine()
         with pytest.raises(RuntimeError, match="dim unknown"):
             _ = engine.dim
+
+
+class TestSentenceTransformerCache:
+    """The engine cache must return the same instance for a given model name
+    so repeated embedding_search() calls don't reload the model."""
+
+    def test_same_instance_for_same_model(self):
+        import sys
+        import types
+
+        # Build stub modules so __init__ runs without a real model download.
+        fake_st = types.ModuleType("sentence_transformers")
+
+        class FakeSentenceTransformer:
+            def __init__(self, model_name, device=None):
+                self.model_name = model_name
+                self.device = device
+
+            def get_embedding_dimension(self):
+                return 8
+
+            def encode(self, texts, **kwargs):
+                return [[0.0] * 8 for _ in texts]
+
+        fake_st.SentenceTransformer = FakeSentenceTransformer
+
+        fake_torch = types.ModuleType("torch")
+        _false = types.SimpleNamespace(is_available=lambda: False)
+        fake_torch.backends = types.SimpleNamespace(mps=_false, cuda=_false)
+        fake_torch.cuda = _false
+
+        orig_st = sys.modules.get("sentence_transformers")
+        orig_torch = sys.modules.get("torch")
+        sys.modules["sentence_transformers"] = fake_st
+        sys.modules["torch"] = fake_torch
+        _engine_cache.clear()
+        try:
+            from kb.embeddings import SentenceTransformerEngine
+
+            first = SentenceTransformerEngine(model="bge-m3-test")
+            second = SentenceTransformerEngine(model="bge-m3-test")
+            assert first is second
+            # Cache is keyed by model name.
+            assert "bge-m3-test" in _engine_cache
+            assert _engine_cache["bge-m3-test"] is first
+        finally:
+            _engine_cache.clear()
+            if orig_st is not None:
+                sys.modules["sentence_transformers"] = orig_st
+            else:
+                sys.modules.pop("sentence_transformers", None)
+            if orig_torch is not None:
+                sys.modules["torch"] = orig_torch
+            else:
+                sys.modules.pop("torch", None)

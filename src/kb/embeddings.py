@@ -95,6 +95,12 @@ class LocalHashEngine:
         return results
 
 
+# Module-level cache of loaded SentenceTransformerEngine instances, keyed by
+# model name. Loading bge-m3 takes ~1-2s; without this cache every
+# embedding_search() call reloaded the model from disk.
+_engine_cache: dict[str, "SentenceTransformerEngine"] = {}
+
+
 class SentenceTransformerEngine:
     """Real local embedding model via sentence-transformers (MPS-accelerated on Apple Silicon).
 
@@ -103,7 +109,24 @@ class SentenceTransformerEngine:
     ``pip install -e ".[embedding]"``.
     """
 
+    def __new__(cls, model: str | None = None):
+        # Resolve the effective model name the same way __init__ does so the
+        # cache key matches across calls that omit the argument.
+        name = model or os.environ.get("KB_EMBED_MODEL", "BAAI/bge-m3")
+        cached = _engine_cache.get(name)
+        if cached is not None:
+            return cached
+        instance = super().__new__(cls)
+        return instance
+
     def __init__(self, model: str | None = None):
+        # If this instance came from the cache, __init__ would otherwise re-run
+        # and clobber state. Guard against re-initialization.
+        name = model or os.environ.get("KB_EMBED_MODEL", "BAAI/bge-m3")
+        if name in _engine_cache and _engine_cache[name] is not self:
+            # Another instance already serves this model; nothing to do.
+            return
+
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
@@ -111,14 +134,27 @@ class SentenceTransformerEngine:
                 "sentence-transformers not installed. "
                 'Run: pip install -e ".[embedding]"'
             ) from e
+        import os as _os
         import torch
 
-        self._model_name = model or os.environ.get("KB_EMBED_MODEL", "BAAI/bge-m3")
+        # Silence noisy HuggingFace hub download / loading progress bars.
+        _os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+        self._model_name = name
         device = "mps" if torch.backends.mps.is_available() else (
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self._model = SentenceTransformer(self._model_name, device=device)
-        self._dim = self._model.get_sentence_embedding_dimension()
+        # The getter was renamed get_sentence_embedding_dimension ->
+        # get_embedding_dimension in newer sentence-transformers releases, but
+        # the old name still emits a FutureWarning. Prefer the new name and fall
+        # back to the old one for compatibility.
+        getter = getattr(self._model, "get_embedding_dimension", None)
+        if getter is None:
+            getter = self._model.get_sentence_embedding_dimension
+        self._dim = getter()
+
+        _engine_cache[self._model_name] = self
 
     @property
     def dim(self) -> int:
