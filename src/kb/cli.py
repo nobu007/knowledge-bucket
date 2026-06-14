@@ -518,6 +518,7 @@ id: {ulid}
 title: {yaml_scalar(paper_data['title'])}
 source_type: {paper_data['source_type']}
 source_key: {paper_skey}
+content_hash: sha256:{compute_content_hash(paper_data['body'])}
 created: {now}
 updated: {now}
 """
@@ -592,6 +593,7 @@ id: {ulid}
 title: {yaml_scalar(pdf_data['title'])}
 source_type: {pdf_data['source_type']}
 source_key: {pdf_skey}
+content_hash: sha256:{compute_content_hash(pdf_data['body'])}
 created: {now}
 updated: {now}
 """
@@ -671,6 +673,7 @@ id: {ulid}
 title: {yaml_scalar(repo_data['title'])}
 source_type: {repo_data['source_type']}
 source_key: {repo_skey}
+content_hash: sha256:{compute_content_hash(repo_data['body'])}
 {created_line}
 updated: {now}
 source: {repo_data['source_url']}
@@ -736,6 +739,7 @@ id: {ulid}
 title: {yaml_scalar(video_data['title'])}
 source_type: {video_data['source_type']}
 source_key: {video_skey}
+content_hash: sha256:{compute_content_hash(video_data['body'])}
 created: {now}
 updated: {now}
 source: {video_data['source_url']}

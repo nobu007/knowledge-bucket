@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass, field
 from importlib import resources
 
+from .core import yaml_scalar
+
 _SOURCE_TYPE_FILES: dict[str, str] = {
     "web": "analyzer_web.md",
     "paper": "analyzer_paper.md",
@@ -326,7 +328,7 @@ def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
         kept.pop()
 
     new_lines = kept
-    new_lines.append(f"summary: {update['summary']}")
+    new_lines.append(f"summary: {yaml_scalar(update['summary'])}")
     new_lines.append("analysis:")
     for k, v in update["analysis"].items():
         new_lines.append(f"  {k}: {v}")
@@ -338,17 +340,17 @@ def apply_analysis_to_doc(doc_path: str, analysis: AnalysisResult) -> None:
         new_lines.append(f"  {group}:")
         for c in items:
             new_lines.append(f"    - id: {c['id']}")
-            new_lines.append(f"      label: {c['label']}")
+            new_lines.append(f"      label: {yaml_scalar(c['label'])}")
             new_lines.append(f"      weight: {c['weight']}")
     if update["concepts"].get("entities"):
         new_lines.append("  entities:")
         for e in update["concepts"]["entities"]:
             new_lines.append(f"    - id: {e['id']}")
-            new_lines.append(f"      label: {e['label']}")
+            new_lines.append(f"      label: {yaml_scalar(e['label'])}")
     if update.get("tags_display"):
         new_lines.append("tags_display:")
         for tag in update["tags_display"]:
-            new_lines.append(f"  - {tag}")
+            new_lines.append(f"  - {yaml_scalar(tag)}")
     new_lines.append("---")
     new_lines.extend(lines[fm_end:])
 
