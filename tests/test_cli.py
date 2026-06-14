@@ -368,3 +368,58 @@ class TestAddRepoSourceKey:
                     assert "source_key: repo:" in content
                     return
             pytest.fail("No document file found")
+
+
+class TestAddRepoDedup:
+    @patch("kb.parsers.repo.parse_repo")
+    def test_re_add_updates_not_duplicates(self, mock_parse):
+        """Re-adding the same repo URL updates the existing doc, no dupe."""
+        mock_parse.return_value = {
+            "title": "user/repo",
+            "source_type": "git_repo",
+            "source_url": "https://github.com/user/repo",
+            "body": "# README\nHello",
+            "metadata": {"language": "Python", "stars": 42, "topics": []},
+        }
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            runner.invoke(main, ["add-repo", "https://github.com/user/repo"])
+            # Re-add with changed content
+            mock_parse.return_value["body"] = "# README\nUpdated content"
+            result = runner.invoke(main, ["add-repo", "https://github.com/user/repo"])
+            assert result.exit_code == 0
+
+            doc_dir = os.path.join("records", "doc")
+            count = 0
+            for root, dirs, filenames in os.walk(doc_dir):
+                for fn in filenames:
+                    if fn.endswith(".md"):
+                        count += 1
+            assert count == 1  # exactly one doc, not two
+
+
+class TestDoctor:
+    def test_doctor_passes_on_clean_bucket(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            runner.invoke(main, ["add", "--title", "T", "--content", "body",
+                                 "--type", "web", "--source", "https://x.com"])
+            result = runner.invoke(main, ["doctor"])
+            assert result.exit_code == 0
+            assert "All checks passed" in result.output
+
+    def test_doctor_fails_on_broken_front_matter(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(main, ["init", "."])
+            # Write a doc with a colon in the title that breaks YAML
+            import os as _os
+            doc_dir = _os.path.join("records", "doc", "ab", "cd")
+            _os.makedirs(doc_dir)
+            with open(_os.path.join(doc_dir, "01KTEST.md"), "w") as f:
+                f.write("---\nid: 01KTEST\ntitle: bad: title\n"
+                        "source_type: web\nsource_key: url:x\n---\n\nbody\n")
+            result = runner.invoke(main, ["doctor"])
+            assert result.exit_code != 0

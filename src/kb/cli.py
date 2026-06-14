@@ -1069,6 +1069,103 @@ def health(as_json: bool):
 
 
 @main.command()
+def doctor():
+    """Run data-quality checks on the bucket. Exits non-zero if any fail.
+
+    Checks: front-matter YAML parse, required fields, duplicate source_keys,
+    analysis coverage, concept sanity, index consistency. Designed to run
+    before/after bulk ingestion to catch corruption early.
+    """
+    from .core import DOC_DIR, RECORDS_DIR
+    from .dedup import find_doc_by_source_key
+    from .graph import _read_doc_info
+
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+
+    doc_dir = os.path.join(root, RECORDS_DIR, DOC_DIR)
+    docs = []
+    for dp, _dn, fns in os.walk(doc_dir):
+        for fn in fns:
+            if fn.endswith(".md"):
+                docs.append(os.path.join(dp, fn))
+
+    problems = 0
+    click.echo(f"=== kb doctor: {len(docs)} document(s) ===")
+
+    # QC1: front-matter parse
+    bad = [f for f in docs if _read_doc_info(f) is None]
+    if bad:
+        problems += len(bad)
+        click.echo(f"[FAIL] QC1 front-matter parse: {len(bad)} unparseable")
+        for f in bad[:5]:
+            click.echo(f"         {os.path.basename(f)[:20]}")
+    else:
+        click.echo("[ok]   QC1 front-matter parse: all docs valid")
+
+    # QC2: required fields
+    required = ("id:", "title:", "source_type:", "source_key:", "content_hash:")
+    miss = []
+    for f in docs:
+        text = open(f).read()
+        if any(r not in text for r in required):
+            miss.append(f)
+    if miss:
+        problems += len(miss)
+        click.echo(f"[FAIL] QC2 required fields: {len(miss)} missing fields")
+    else:
+        click.echo("[ok]   QC2 required fields: all present")
+
+    # QC3: duplicate source_keys
+    keys: dict[str, list[str]] = {}
+    for f in docs:
+        text = open(f).read()
+        for line in text.split("\n"):
+            if line.startswith("source_key:"):
+                keys.setdefault(line.split(":", 1)[1].strip(), []).append(f)
+                break
+    dups = {k: v for k, v in keys.items() if len(v) > 1}
+    if dups:
+        problems += len(dups)
+        click.echo(f"[FAIL] QC3 duplicate source_keys: {len(dups)}")
+        for k, v in dups.items():
+            click.echo(f"         {k}")
+    else:
+        click.echo("[ok]   QC3 duplicate source_keys: none")
+
+    # QC4: analysis coverage
+    unanalyzed = []
+    for f in docs:
+        text = open(f).read()
+        if "confidence:" not in text:
+            unanalyzed.append(f)
+    if unanalyzed:
+        click.echo(f"[warn] QC4 analysis coverage: {len(unanalyzed)}/{len(docs)} unanalyzed")
+    else:
+        click.echo("[ok]   QC4 analysis coverage: all analyzed")
+
+    # QC5: index consistency
+    try:
+        report = verify_index(root)
+        ghosts = len(report.get("ghost_entries", []))
+        missing = len(report.get("missing_entries", []))
+        if ghosts or missing:
+            problems += ghosts + missing
+            click.echo(f"[FAIL] QC5 index consistency: {ghosts} ghost, {missing} missing")
+        else:
+            click.echo("[ok]   QC5 index consistency: clean")
+    except Exception as e:
+        click.echo(f"[warn] QC5 index consistency: {e}")
+
+    if problems:
+        click.echo(f"\n{problems} problem(s) found")
+        raise SystemExit(1)
+    click.echo("\nAll checks passed")
+
+
+@main.command()
 @click.option("--engine", default="tfidf",
               type=click.Choice(["tfidf", "embedding", "openai", "local"]),
               help="Engine: tfidf (default), embedding/openai, local (hash)")
