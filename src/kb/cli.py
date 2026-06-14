@@ -41,6 +41,8 @@ from .storage import get_raw, save_raw
 from .sync import sync
 from .vectors import build_vectors, semantic_search
 
+from .generate import generate as generate_dataset
+
 
 @click.group()
 @click.version_option(package_name="kb-tools")
@@ -1184,6 +1186,33 @@ def doctor():
         click.echo(f"\n{problems} problem(s) found")
         raise SystemExit(1)
     click.echo("\nAll checks passed")
+
+
+@main.command()
+@click.option("--concept", default=None, help="Filter docs whose front matter mentions this concept (substring)")
+@click.option("--type", "source_type", default=None, help="Filter by source_type (web|paper|git_repo|memo|pdf|video)")
+@click.option("--pairs", "-n", type=int, default=5, show_default=True, help="Instruction pairs to generate per doc")
+@click.option("--format", "fmt", type=click.Choice(["openai", "alpaca"]), default="openai", show_default=True)
+@click.option("--limit", type=int, default=None, help="Max docs to process")
+@click.option("--output", "-o", default=None, help="Output JSONL path (default .kb/training/sft-<tag>.jsonl)")
+def generate(concept: str | None, source_type: str | None, pairs: int, fmt: str,
+             limit: int | None, output: str | None):
+    """Generate domain training data (SFT JSONL) from analyzed docs via the agent proxy."""
+    root = kb_root()
+    if root is None:
+        click.echo("Not in a knowledge bucket. Run 'kb init' first.", err=True)
+        raise SystemExit(1)
+    if not get_api_key():
+        click.echo("Error: ai-hub-agent-proxy not found (set KB_AGENT_PROXY)", err=True)
+        raise SystemExit(1)
+    report = generate_dataset(root, concept=concept, source_type=source_type,
+                              n_pairs=pairs, fmt=fmt, limit=limit, output=output)
+    if report["docs"] == 0:
+        click.echo("No docs matched the filter.")
+        return
+    click.echo(f"Processed {report['docs']} doc(s) → {report['pairs']} pair(s) "
+               f"[{fmt}] (skipped {report['duplicates_skipped']} dupes)")
+    click.echo(f"Output: {report['output']}")
 
 
 @main.command()

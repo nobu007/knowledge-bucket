@@ -133,8 +133,8 @@ def _parse_entity_list(items: list[dict]) -> list[EntityRef]:
 
 
 def _extract_json(text: str) -> str:
-    """Extract a JSON object from text that may be wrapped in markdown fences
-    or have preamble/trailing text. Returns the raw JSON substring."""
+    """Extract a JSON value (object or array) from text that may be wrapped in
+    markdown fences or have preamble/trailing text. Returns the raw substring."""
     s = text.strip()
 
     # Strip markdown code fences: ```json\n...\n``` or ```\n...\n```
@@ -142,24 +142,45 @@ def _extract_json(text: str) -> str:
     if fence:
         s = fence.group(1).strip()
 
-    # If it still has surrounding text, grab the outermost {...} block.
-    if not s.startswith("{"):
-        start = s.find("{")
-        if start == -1:
-            return s  # let json.loads raise a clear error
-        # find matching closing brace by depth counting
-        depth = 0
-        end = -1
-        for i in range(start, len(s)):
-            if s[i] == "{":
-                depth += 1
-            elif s[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        if end != -1:
-            s = s[start:end + 1]
+    # Already a clean JSON value at the start.
+    if s[:1] in "{[":
+        return s
+
+    # Grab the outermost {...} or [...] block by depth counting over the first
+    # opener we find, tracking string state so braces inside strings are ignored.
+    start = -1
+    for i, ch in enumerate(s):
+        if ch in "{[":
+            start = i
+            break
+    if start == -1:
+        return s  # let json.loads raise a clear error
+    open_ch, close_ch = ("{", "}") if s[start] == "{" else ("[", "]")
+    depth = 0
+    in_str = False
+    esc = False
+    end = -1
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end != -1:
+        s = s[start:end + 1]
     return s
 
 
